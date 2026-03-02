@@ -1,0 +1,111 @@
+{
+  "projectType": "api-service",
+  "projectName": "Spectra Server",
+  "projectDescription": "Real-time game state ingestion server for Valorant tournament overlays that processes data from observer clients and streams to broadcast frontends.",
+  "theme": "aspen",
+  "primaryColor": "#FF4655",
+  "lightColor": "#E74856",
+  "darkColor": "#C93545",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/docker",
+              "deployment/local-development",
+              "deployment/configuration"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/data-flow",
+              "architecture/system-components"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/authentication",
+              "guides/match-management",
+              "guides/replay-system",
+              "guides/preview-mode",
+              "guides/integrations"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "REST API",
+            "pages": [
+              "api/rest/overview",
+              "api/rest/status",
+              "api/rest/previews",
+              "api/rest/organization",
+              "api/rest/team-info"
+            ]
+          },
+          {
+            "group": "WebSocket API",
+            "pages": [
+              "api/websocket/overview",
+              "api/websocket/incoming-connection",
+              "api/websocket/outgoing-connection",
+              "api/websocket/authentication",
+              "api/websocket/data-events"
+            ]
+          },
+          {
+            "group": "Data Models",
+            "pages": [
+              "api/models/match",
+              "api/models/player",
+              "api/models/team",
+              "api/models/events",
+              "api/models/tools-data"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Real-time WebSocket data ingestion from Valorant game observers",
+    "Dual WebSocket servers for incoming game data and outgoing broadcast streams",
+    "REST API for match previews, status checks, and team information",
+    "Match state management with automatic cleanup and replay capabilities",
+    "Authentication system with key validation and organization management",
+    "Backend integration for match tracking and supporter verification",
+    "Tournament tools data including series info, timeouts, sponsors, and player cameras",
+    "Preview mode for testing overlay configurations without active matches"
+  ],
+  "publicApiSurface": [
+    "GET /status - Server health and active match count",
+    "PUT /createPreview - Generate match preview with code",
+    "GET /preview/:previewCode - Retrieve preview match data",
+    "GET /getOrgForKey - Validate organization access key",
+    "GET /getTeamInfoForCode - Fetch team information by group code",
+    "WebSocket port 5100 - Incoming game data from observer clients",
+    "WebSocket port 5101 - HTTPS REST API server",
+    "WebSocket port 5200 - Outgoing match data to broadcast frontends",
+    "obs_logon event - Observer client authentication",
+    "aux_logon event - Auxiliary client authentication",
+    "obs_data event - Observer game state updates",
+    "aux_data event - Auxiliary player data updates",
+    "match_data event - Broadcast match state to frontends"
+  ]
+}
