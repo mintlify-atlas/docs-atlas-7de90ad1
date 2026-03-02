@@ -1,0 +1,273 @@
+---
+title: Team Info Endpoint
+description: Retrieve team information for active matches using group codes
+---
+
+## GET /getTeamInfoForCode
+
+Retrieves team information for an active match using its group code. This endpoint provides team details including names, tricodes, logos, and attack side configuration.
+
+### Authentication
+
+No authentication required. Uses group code for lookup.
+
+### Query Parameters
+
+<ParamField query="groupCode" type="string" required>
+  The match group code. Must be a valid string.
+</ParamField>
+
+### Response
+
+<ResponseField name="leftTeam" type="object" required>
+  Left team information
+  
+  <ResponseField name="leftTeam.name" type="string" required>
+    Team name
+  </ResponseField>
+  
+  <ResponseField name="leftTeam.tricode" type="string" required>
+    Team tricode (e.g., "SEN", "FNC", "TL")
+  </ResponseField>
+  
+  <ResponseField name="leftTeam.url" type="string" required>
+    Team logo URL
+  </ResponseField>
+  
+  <ResponseField name="leftTeam.attackStart" type="boolean" required>
+    Whether the team starts on the attack side
+  </ResponseField>
+</ResponseField>
+
+<ResponseField name="rightTeam" type="object" required>
+  Right team information (same structure as leftTeam)
+</ResponseField>
+
+### Status Codes
+
+- `200` - Team info found and returned
+- `400` - Group code parameter is missing or invalid
+- `404` - Group code not found
+
+### Error Responses
+
+```json
+{
+  "error": "Group code is required"
+}
+```
+
+```json
+{
+  "error": "Group code not found"
+}
+```
+
+### Implementation
+
+From `src/index.ts:66-84`:
+
+```typescript
+app.get("/getTeamInfoForCode", async (req, res) => {
+  const groupCode = req.query.groupCode;
+  if (!groupCode || typeof groupCode !== "string") {
+    res
+      .status(400)
+      .header("Access-Control-Allow-Origin", "*")
+      .json({ error: "Group code is required" });
+    return;
+  }
+  const teamInfo = MatchController.getInstance().getTeamInfoForCode(groupCode);
+  if (teamInfo) {
+    res.status(200).header("Access-Control-Allow-Origin", "*").json(teamInfo);
+  } else {
+    res
+      .status(404)
+      .header("Access-Control-Allow-Origin", "*")
+      .json({ error: "Group code not found" });
+  }
+});
+```
+
+Team info retrieval from `src/controller/MatchController.ts:188-195`:
+
+```typescript
+public getTeamInfoForCode(groupCode: string) {
+  const teamInfo = this.codeToTeamInfo[groupCode];
+  if (teamInfo) {
+    return teamInfo;
+  } else {
+    return undefined;
+  }
+}
+```
+
+### Team Info Storage
+
+Team information is stored when a match is created and cached with a 60-minute expiration:
+
+From `src/controller/MatchController.ts:62-63`:
+
+```typescript
+this.codeToTeamInfo[data.groupCode] = { leftTeam: data.leftTeam, rightTeam: data.rightTeam };
+this.teamInfoExpiry[data.groupCode] = Date.now() + 1000 * 60 * 60; // 60 minute expiry
+```
+
+### Team Data Structure
+
+The `AuthTeam` interface from `src/connector/websocketIncoming.ts:312-317`:
+
+```typescript
+export interface AuthTeam {
+  name: string;
+  tricode: string;
+  url: string;
+  attackStart: boolean;
+}
+```
+
+### Example Requests
+
+<CodeGroup>
+
+```bash cURL
+curl "http://localhost:5101/getTeamInfoForCode?groupCode=ABC123"
+```
+
+```javascript JavaScript
+const groupCode = 'ABC123';
+
+fetch(`http://localhost:5101/getTeamInfoForCode?groupCode=${groupCode}`)
+  .then(res => {
+    if (res.status === 404) {
+      throw new Error('Group code not found');
+    }
+    return res.json();
+  })
+  .then(teamInfo => {
+    console.log('Left Team:', teamInfo.leftTeam.name);
+    console.log('Right Team:', teamInfo.rightTeam.name);
+  })
+  .catch(err => console.error(err));
+```
+
+```python Python
+import requests
+
+group_code = 'ABC123'
+response = requests.get(
+    'http://localhost:5101/getTeamInfoForCode',
+    params={'groupCode': group_code}
+)
+
+if response.status_code == 200:
+    team_info = response.json()
+    print(f"Left Team: {team_info['leftTeam']['name']} ({team_info['leftTeam']['tricode']})")
+    print(f"Right Team: {team_info['rightTeam']['name']} ({team_info['rightTeam']['tricode']})")
+    print(f"Attack Start: {team_info['leftTeam']['attackStart']}")
+elif response.status_code == 404:
+    print('Group code not found')
+else:
+    print('Error:', response.json()['error'])
+```
+
+</CodeGroup>
+
+### Example Response
+
+```json
+{
+  "leftTeam": {
+    "name": "Team Liquid",
+    "tricode": "TL",
+    "url": "https://example.com/team-liquid-logo.png",
+    "attackStart": true
+  },
+  "rightTeam": {
+    "name": "Fnatic",
+    "tricode": "FNC",
+    "url": "https://example.com/fnatic-logo.png",
+    "attackStart": false
+  }
+}
+```
+
+### Cache Expiration
+
+Team info is cached for **60 minutes** (1 hour). A cleanup process runs every 5 minutes to remove expired entries:
+
+From `src/controller/MatchController.ts:22-34`:
+
+```typescript
+const cleanupInterval = setInterval(
+  () => {
+    const now = Date.now();
+    for (const groupCode in this.teamInfoExpiry) {
+      if (now > this.teamInfoExpiry[groupCode]) {
+        delete this.codeToTeamInfo[groupCode];
+        delete this.teamInfoExpiry[groupCode];
+      }
+    }
+  },
+  1000 * 60 * 5,
+); // Check every 5 minutes
+```
+
+### Use Cases
+
+#### Pre-Match Display
+
+Retrieve team information before connecting to a match:
+
+```javascript
+async function loadMatchTeams(groupCode) {
+  const response = await fetch(
+    `http://localhost:5101/getTeamInfoForCode?groupCode=${groupCode}`
+  );
+  
+  if (!response.ok) {
+    throw new Error('Match not found');
+  }
+  
+  const { leftTeam, rightTeam } = await response.json();
+  
+  // Display team information
+  displayTeam('left', leftTeam);
+  displayTeam('right', rightTeam);
+}
+```
+
+#### Team Logo Preloading
+
+Preload team logos for faster rendering:
+
+```javascript
+const teamInfo = await fetch(
+  `http://localhost:5101/getTeamInfoForCode?groupCode=${code}`
+).then(r => r.json());
+
+const logos = [
+  teamInfo.leftTeam.url,
+  teamInfo.rightTeam.url
+];
+
+await Promise.all(logos.map(url => preloadImage(url)));
+```
+
+#### Attack Side Configuration
+
+Determine which team starts on attack:
+
+```javascript
+const { leftTeam, rightTeam } = teamInfo;
+const attackingTeam = leftTeam.attackStart ? leftTeam : rightTeam;
+console.log(`${attackingTeam.name} starts on attack`);
+```
+
+### Notes
+
+- Group codes are created when a match is registered
+- Team info persists for 60 minutes after match creation
+- No authentication is required (group code serves as identifier)
+- CORS headers are included for browser-based requests
+- Returns `404` for expired or non-existent group codes

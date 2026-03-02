@@ -1,0 +1,373 @@
+---
+title: 'Team'
+description: 'Team data model managing players, score, timeouts, and round history'
+---
+
+## Overview
+
+The `Team` class represents one of the two teams in a match, managing its roster of players, score tracking, timeout state, and round-by-round history.
+
+## Team Class
+
+```typescript
+export class Team {
+  // Identity
+  public teamName: string;
+  public teamTricode: string;
+  public teamUrl: string = "";
+  
+  // Game State
+  public ingameTeamId: number = 0;  // 0 or 1
+  public isAttacking: boolean = false;
+  public roundsWon: number = 0;
+  
+  // Players
+  private players: Player[] = [];
+  private playerCount: number = 0;
+  private hasDuplicateAgents: boolean = false;
+  
+  // Economy
+  private spentThisRound: number = 0;
+  
+  // Round History
+  private roundRecord: RecordEntry[] = [];
+  
+  // Configuration
+  private removeTricode: boolean = false;
+  private hasHandledTeam: boolean = false;
+}
+```
+
+## Properties
+
+### Identity
+
+<ResponseField name="teamName" type="string">
+  Full team name (e.g., "Sentinels").
+</ResponseField>
+
+<ResponseField name="teamTricode" type="string">
+  3-letter team code (e.g., "SEN").
+</ResponseField>
+
+<ResponseField name="teamUrl" type="string" default="">
+  URL to team logo image.
+</ResponseField>
+
+### Game State
+
+<ResponseField name="ingameTeamId" type="number">
+  In-game team identifier.
+  
+  <Expandable title="Team ID Mapping">
+    - `0`: Attacking team at match start
+    - `1`: Defending team at match start
+    
+    Switches sides at round 13 and every 2 rounds in overtime.
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="isAttacking" type="boolean">
+  Whether the team is currently on the attacking side.
+</ResponseField>
+
+<ResponseField name="roundsWon" type="number" default="0">
+  Total rounds won in the match.
+</ResponseField>
+
+### Players
+
+<ResponseField name="players" type="Player[]">
+  Array of up to 5 players on the team.
+</ResponseField>
+
+<ResponseField name="playerCount" type="number">
+  Number of players currently in the roster (0-5).
+</ResponseField>
+
+<ResponseField name="hasDuplicateAgents" type="boolean" default="false">
+  Whether any two players have selected the same agent (affects assist tracking).
+</ResponseField>
+
+### Economy
+
+<ResponseField name="spentThisRound" type="number">
+  Total credits spent by all team members in the current round.
+</ResponseField>
+
+### Round History
+
+<ResponseField name="roundRecord" type="RecordEntry[]">
+  Array of round results and win conditions.
+  
+  Pre-initialized with 26 "upcoming" entries.
+</ResponseField>
+
+## Constructor
+
+```typescript
+constructor(team: AuthTeam, removeTricode: boolean)
+```
+
+<ResponseField name="team" type="AuthTeam" required>
+  Team configuration from authentication data:
+  
+  ```typescript
+  {
+    name: string;        // Team name
+    tricode: string;     // 3-letter code
+    url: string;         // Logo URL
+    attackStart: boolean; // Starting side
+  }
+  ```
+</ResponseField>
+
+<ResponseField name="removeTricode" type="boolean" required>
+  Whether to strip the tricode prefix from player names (from playercams settings).
+</ResponseField>
+
+## Core Methods
+
+### receiveTeamSpecificData
+
+```typescript
+public receiveTeamSpecificData(data: IAuthedData | IAuthedAuxData | IFormattedAuxiliary): void
+```
+
+Routes incoming event data to the appropriate handler and updates team/player state.
+
+<ResponseField name="data" type="IAuthedData | IAuthedAuxData | IFormattedAuxiliary" required>
+  <Expandable title="Handled Data Types">
+    - `ROSTER`: Player roster updates → `processRosterData()`
+    - `SCOREBOARD`: Observer scoreboard → `processScoreboardData()`
+    - `KILLFEED`: Kill events → `processKillfeedData()`
+    - `AUX_SCOREBOARD`: Auxiliary scoreboard → `processAuxScoreboardData()`
+    - `AUX_ABILITIES`: Ability charges → `processAuxAbilityData()`
+    - `AUX_HEALTH`: Player health → `processAuxHealthData()`
+    - `AUX_ASTRA_TARGETING`: Astra cosmic form → `processAuxAstraTargeting()`
+    - `AUX_CYPHER_CAM`: Cypher camera → `processAuxCypherCam()`
+  </Expandable>
+</ResponseField>
+
+### receiveAuxScoreboardTeamData
+
+```typescript
+public receiveAuxScoreboardTeamData(scoreboards: IFormattedAuxScoreboardTeam[]): void
+```
+
+Batch processes scoreboard data for all team members from auxiliary client.
+
+### switchSides
+
+```typescript
+public switchSides(): void
+```
+
+Toggles the `isAttacking` flag. Called at half (round 13) and every 2 rounds in overtime.
+
+### resetRoundSpecificValues
+
+```typescript
+public resetRoundSpecificValues(isSideSwitch: boolean): void
+```
+
+Resets round-specific data for all players at the start of each round.
+
+<ResponseField name="isSideSwitch" type="boolean" required>
+  If true, resets player money to 800 (pistol round economy).
+</ResponseField>
+
+### addRoundReason
+
+```typescript
+public addRoundReason(reason: RecordType, roundNumber: number): void
+```
+
+Records the outcome of a round in the team's history.
+
+<ResponseField name="reason" type="RecordType" required>
+  <Expandable title="Round Result Types">
+    - `"detonated"`: Won by spike detonation
+    - `"defused"`: Won by spike defusal
+    - `"kills"`: Won by eliminations
+    - `"timeout"`: Won because attackers ran out of time
+    - `"lost"`: Lost the round
+    - `"upcoming"`: Round hasn't been played yet
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="roundNumber" type="number" required>
+  The round number (1-indexed).
+</ResponseField>
+
+### Player Queries
+
+```typescript
+public hasTeamMemberByName(playerName: string): boolean
+public hasTeamMemberBySearchName(playerSearchName: string): boolean
+public hasTeamMemberById(playerId: string): boolean
+public getPlayerCount(): number
+public getFirstPlayerId(): string
+public alivePlayers(): number
+public getMoneyFor(playerId: string): number
+```
+
+### setObservedPlayer
+
+```typescript
+public setObservedPlayer(observedName: string): void
+```
+
+Updates all players' `isObserved` flag based on the camera target.
+
+### findDuplicateAgents
+
+```typescript
+public findDuplicateAgents(): void
+```
+
+Checks if any two players have the same agent selected. Sets `hasDuplicateAgents` flag, which affects assist attribution logic.
+
+### getSpentThisRound
+
+```typescript
+public getSpentThisRound(): number
+```
+
+Calculates total money spent by all players in the current round.
+
+### setAuxDisconnected
+
+```typescript
+public setAuxDisconnected(playerId: string): void
+```
+
+Marks a specific player's auxiliary data as disconnected.
+
+## Supporting Types
+
+### RecordEntry
+
+```typescript
+export interface RecordEntry {
+  type: RecordType;
+  wasAttack: boolean;
+  round: number;
+}
+```
+
+<ResponseField name="type" type="RecordType">
+  The outcome type (see `addRoundReason` above).
+</ResponseField>
+
+<ResponseField name="wasAttack" type="boolean">
+  Whether the team was attacking when this round was played.
+</ResponseField>
+
+<ResponseField name="round" type="number">
+  The round number.
+</ResponseField>
+
+### RecordType
+
+```typescript
+type RecordType = "detonated" | "defused" | "kills" | "timeout" | "lost" | "upcoming";
+```
+
+## Example Usage
+
+```typescript
+// Team is created during match initialization
+const teamConfig: AuthTeam = {
+  name: "Sentinels",
+  tricode: "SEN",
+  url: "https://example.com/sentinels-logo.png",
+  attackStart: true
+};
+
+const team = new Team(teamConfig, false);
+
+// Process roster data
+team.receiveTeamSpecificData({
+  obsName: "Observer1",
+  groupCode: "ABC123",
+  type: DataTypes.ROSTER,
+  timestamp: Date.now(),
+  data: {
+    name: "TenZ",
+    tagline: "SEN",
+    playerId: "player-uuid-1",
+    startTeam: 0,
+    agentInternal: "Jett_PC_C",
+    position: 0,
+    locked: true,
+    rank: 28
+  }
+});
+
+// Update scoreboard
+team.receiveTeamSpecificData({
+  obsName: "Observer1",
+  groupCode: "ABC123",
+  type: DataTypes.SCOREBOARD,
+  timestamp: Date.now(),
+  data: {
+    name: "TenZ",
+    tagline: "SEN",
+    playerId: "player-uuid-1",
+    startTeam: 0,
+    agentInternal: "Jett_PC_C",
+    isAlive: true,
+    initialArmor: 2,
+    scoreboardWeaponInternal: "operator",
+    currUltPoints: 7,
+    maxUltPoints: 7,
+    hasSpike: false,
+    money: 2700,
+    kills: 15,
+    deaths: 10,
+    assists: 3
+  }
+});
+
+// Record round outcome
+team.addRoundReason("kills", 1);
+
+// Switch sides at half
+team.switchSides();
+
+console.log(team.isAttacking); // false (was true)
+console.log(team.getPlayerCount()); // 1
+console.log(team.alivePlayers()); // 1
+console.log(team.getSpentThisRound()); // Credits spent by all players
+```
+
+## Roster Management
+
+<Expandable title="Player Addition Logic">
+  When `ROSTER` data is received:
+  1. Check if player already exists (by `playerId`)
+  2. If exists, update their data via `player.onRosterUpdate()`
+  3. If new and team has < 5 players:
+     - Create new `Player` instance
+     - Optionally remove tricode from name
+     - Add to roster
+     - Increment `playerCount`
+  4. If team is full (5 players), log error
+</Expandable>
+
+<Expandable title="Killfeed Processing">
+  When processing killfeed events:
+  1. Find attacker by name → extract detailed stats
+  2. Find victim by name → mark as killed
+  3. If no duplicate agents, attribute assists by agent match
+  4. Falls back to estimating stats if scoreboard unavailable
+</Expandable>
+
+<Expandable title="Economy Tracking">
+  Money spent is calculated by:
+  1. Detecting first purchase (money decreases)
+  2. Tracking subsequent money changes during buy phase
+  3. Summing across all players for team total
+  4. Resetting at start of next round
+</Expandable>

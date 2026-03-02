@@ -1,0 +1,341 @@
+---
+title: Authentication
+description: Authenticate clients with Spectra Server using access keys and group codes
+---
+
+Spectra Server implements a comprehensive authentication system for both observer clients and auxiliary clients. This guide covers the authentication flow, access key validation, and configuration options.
+
+## Authentication Overview
+
+The server supports two types of client authentication:
+
+1. **Observer Authentication** (`obs_logon`) - For main game observers that create matches
+2. **Auxiliary Authentication** (`aux_logon`) - For additional clients like player cameras
+
+## Observer Client Authentication
+
+Observer clients authenticate when creating a new match. The authentication process validates access keys, client versions, and match availability.
+
+### Authentication Flow
+
+<Steps>
+  <Step title="Client connects via WebSocket">
+    Client establishes a WebSocket connection to the server on port 5100.
+  </Step>
+  
+  <Step title="Client sends obs_logon event">
+    Client sends authentication data including access key, group code, and team information.
+    
+    ```json
+    {
+      "type": "AUTH",
+      "clientVersion": "1.2.0",
+      "obsName": "Observer Name",
+      "groupCode": "ABCDEF",
+      "key": "your-access-key",
+      "leftTeam": {
+        "name": "Team A",
+        "tricode": "TMA",
+        "url": "https://example.com/logo.png",
+        "attackStart": true
+      },
+      "rightTeam": {
+        "name": "Team B",
+        "tricode": "TMB",
+        "url": "https://example.com/logo.png",
+        "attackStart": false
+      }
+    }
+    ```
+  </Step>
+  
+  <Step title="Server validates packet format">
+    The server checks that the packet type is `DataTypes.AUTH`. Invalid packets are rejected immediately.
+    
+    ```typescript
+    if (authenticationData.type !== DataTypes.AUTH) {
+      ws.emit("obs_logon_ack", JSON.stringify({ 
+        type: DataTypes.AUTH, 
+        value: false, 
+        reason: "Invalid packet." 
+      }));
+      ws.disconnect();
+    }
+    ```
+  </Step>
+  
+  <Step title="Server validates client version">
+    The server ensures the client version is compatible with the server version.
+    
+    Source: `src/connector/websocketIncoming.ts:84-98`
+  </Step>
+  
+  <Step title="Server validates access key">
+    The server validates the access key using the `isValidKey()` method.
+  </Step>
+  
+  <Step title="Server creates match">
+    If all validations pass, the server attempts to create a new match with the provided group code.
+  </Step>
+  
+  <Step title="Server sends acknowledgment">
+    The server responds with `obs_logon_ack` containing success status and group secret.
+    
+    ```json
+    {
+      "type": "AUTH",
+      "value": true,
+      "reason": "group-secret-here"
+    }
+    ```
+  </Step>
+</Steps>
+
+### Access Key Validation
+
+The server validates access keys through a multi-tier system:
+
+```typescript
+public async isValidKey(key: string): Promise<KeyValidity> {
+  // Skip validation if not required
+  if (process.env.REQUIRE_AUTH_KEY === "false")
+    return { valid: true, reason: ValidityReasons.VALID };
+
+  // Check against static auth key
+  if (process.env.AUTH_KEY === key) 
+    return { valid: true, reason: ValidityReasons.VALID };
+
+  // Verify with backend if enabled
+  let validity: KeyValidity = { valid: false, reason: ValidityReasons.INVALID };
+  if (process.env.USE_BACKEND === "true") {
+    validity = await DatabaseConnector.verifyAccessKey(key);
+  }
+
+  return validity;
+}
+```
+
+Source: `src/connector/websocketIncoming.ts:275-287`
+
+### Key Validity Response
+
+When using backend verification, the key validation includes organization information:
+
+```typescript
+interface KeyValidity {
+  valid: boolean;
+  reason: ValidityReasons;
+  organizationId?: string;
+  organizationName?: string;
+  isSupporter?: boolean;
+}
+```
+
+The backend API returns:
+- **200**: Key is valid with organization details
+- **401**: Key does not exist
+- **403**: Key has expired
+
+Source: `src/connector/databaseConnector.ts:22-61`
+
+## Auxiliary Client Authentication
+
+Auxiliary clients (like player cameras) authenticate using match IDs instead of creating new matches.
+
+### Auxiliary Authentication Flow
+
+<Steps>
+  <Step title="Client sends aux_logon event">
+    ```json
+    {
+      "type": "AUX_AUTH",
+      "clientVersion": "1.2.0",
+      "matchId": "550e8400-e29b-41d4-a716-446655440000",
+      "playerId": "player-riot-puuid",
+      "name": "Player Name"
+    }
+    ```
+  </Step>
+  
+  <Step title="Server validates packet and version">
+    Similar to observer authentication, validates packet type and client version.
+    
+    Source: `src/connector/websocketIncoming.ts:166-191`
+  </Step>
+  
+  <Step title="Server finds match by ID">
+    The server searches for an active match with the provided match ID.
+    
+    ```typescript
+    const groupCode = this.matchController.findMatch(authenticationData.matchId);
+    if (groupCode == null) {
+      ws.emit("aux_logon_ack", JSON.stringify({
+        type: DataTypes.AUTH,
+        value: false,
+        reason: `Game with Match ID ${authenticationData.matchId} not found.`
+      }));
+      ws.disconnect();
+    }
+    ```
+    
+    Source: `src/connector/websocketIncoming.ts:193-209`
+  </Step>
+  
+  <Step title="Server sends acknowledgment">
+    ```json
+    {
+      "type": "AUX_AUTH",
+      "value": true
+    }
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  Auxiliary authentication does not require access key validation. The match ID itself serves as the authentication token.
+</Note>
+
+## Group Codes and Secrets
+
+### Group Codes
+
+Group codes are unique identifiers for matches, typically 6 characters long. They must be:
+- Unique across active matches
+- Provided by the observer client during authentication
+- Used to identify which match data belongs to
+
+### Group Secrets
+
+When a match is created, the server generates a group secret:
+
+```typescript
+const newMatch = new Match(data);
+this.matches[data.groupCode] = newMatch;
+return newMatch.groupSecret;
+```
+
+Source: `src/controller/MatchController.ts:42-67`
+
+The group secret allows reconnection to an existing match:
+
+```typescript
+if (existingMatch != null) {
+  if (data.groupSecret !== existingMatch.groupSecret) {
+    // Reject: wrong secret
+    return "";
+  }
+  // Allow reconnection
+  return "reconnected";
+}
+```
+
+<Warning>
+  If a client attempts to create a match with an existing group code but a different secret, authentication fails with the message: "Game with Group Code {code} exists and is still live."
+</Warning>
+
+## Organization and Supporter Verification
+
+When backend verification is enabled, the server validates organization access and supporter status:
+
+```typescript
+if (validity.organizationId) {
+  authenticationData.organizationId = validity.organizationId;
+}
+authenticationData.isSupporter = validity.isSupporter;
+```
+
+Source: `src/connector/websocketIncoming.ts:115-119`
+
+The backend checks supporter status through a separate endpoint:
+
+```typescript
+private static async checkIsSupporter(orgId: string): Promise<boolean> {
+  const res = await fetch(process.env.SUPPORTER_CHECK_URL + "/" + orgId);
+  if (res.status == 200) {
+    return (await res.json()).isSupporter || false;
+  }
+  return false;
+}
+```
+
+Source: `src/connector/databaseConnector.ts:134-150`
+
+## Environment Variables
+
+Configure authentication behavior with these environment variables:
+
+### REQUIRE_AUTH_KEY
+
+```bash
+REQUIRE_AUTH_KEY=true
+```
+
+Set to `"false"` to disable access key validation entirely. Useful for development.
+
+### AUTH_KEY
+
+```bash
+AUTH_KEY=your-static-access-key
+```
+
+Static access key that always passes validation. Checked before backend verification.
+
+### USE_BACKEND
+
+```bash
+USE_BACKEND=true
+```
+
+Enable backend API verification for access keys.
+
+### BACKEND_URL and BACKEND_TOKEN
+
+```bash
+BACKEND_URL=https://api.example.com
+BACKEND_TOKEN=your-backend-auth-token
+```
+
+Backend API endpoint and authentication token for key verification.
+
+### SUPPORTER_CHECK_URL
+
+```bash
+SUPPORTER_CHECK_URL=https://api.example.com/supporter-check
+```
+
+Endpoint for checking organization supporter status.
+
+## Authentication Examples
+
+### Development (No Auth)
+
+```bash
+REQUIRE_AUTH_KEY=false
+```
+
+### Static Key
+
+```bash
+REQUIRE_AUTH_KEY=true
+AUTH_KEY=dev-key-12345
+```
+
+### Backend Verification
+
+```bash
+REQUIRE_AUTH_KEY=true
+USE_BACKEND=true
+BACKEND_URL=https://api.valospectra.com
+BACKEND_TOKEN=secure-backend-token
+SUPPORTER_CHECK_URL=https://api.valospectra.com/supporter-check
+```
+
+## Common Authentication Errors
+
+| Error Message | Cause | Solution |
+|--------------|-------|----------|
+| "Invalid packet." | Packet type mismatch | Ensure `type` field is correct |
+| "Client version X is not compatible" | Version mismatch | Update client or server |
+| "Invalid Key" / "Expired Key" | Access key validation failed | Check key validity with backend |
+| "Game with Group Code X exists and is still live." | Group code collision with wrong secret | Use different group code or correct secret |
+| "Game with Match ID X not found." | Match doesn't exist (auxiliary auth) | Verify match ID is correct |

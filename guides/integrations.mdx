@@ -1,0 +1,597 @@
+---
+title: Integrations
+description: Integrate Spectra Server with backend APIs, stats systems, and external services
+---
+
+Spectra Server integrates with various backend services for access key validation, match tracking, statistics collection, and player camera systems. This guide covers all integration points and their configuration.
+
+## Backend API Integration
+
+The DatabaseConnector manages communication with the primary backend API.
+
+Source: `src/connector/databaseConnector.ts`
+
+### Configuration
+
+Set these environment variables to enable backend integration:
+
+```bash
+USE_BACKEND=true
+BACKEND_URL=https://api.example.com
+BACKEND_TOKEN=your-secure-backend-token
+```
+
+### API Request Implementation
+
+All backend requests use a common method:
+
+```typescript
+private static async apiRequest(
+  path: string,
+  method: "get" | "post" | "put",
+  body?: any
+): Promise<any> {
+  const res = await fetch(process.env.BACKEND_URL + "/" + path, {
+    method: method,
+    body: JSON.stringify(body),
+    headers: {
+      "Content-Type": "application/json",
+      "X-User-Token": process.env.BACKEND_TOKEN!
+    }
+  });
+
+  if (res.status) {
+    return res;
+  } else {
+    throw new Error(`API request encountered an error. HTTP Code: ${res.status}`);
+  }
+}
+```
+
+Source: `src/connector/databaseConnector.ts:108-132`
+
+<Note>
+  The backend token is sent via the `X-User-Token` header for authentication.
+</Note>
+
+## Access Key Verification
+
+Verify access keys against the backend during authentication:
+
+```typescript
+public static async verifyAccessKey(key: string): Promise<KeyValidity> {
+  let res: Response;
+  try {
+    res = await this.apiRequest(`system/validateAccessKey/${key}`, "get");
+  } catch (e) {
+    return { valid: false, reason: ValidityReasons.UNKNOWN };
+  }
+
+  // Key is valid
+  if (res.status == 200) {
+    const data = await res.json();
+    const isSupporter = await this.checkIsSupporter(data.id);
+    return {
+      valid: true,
+      reason: ValidityReasons.VALID,
+      organizationId: data.id,
+      organizationName: data.name,
+      isSupporter: isSupporter
+    };
+  }
+  // Key does not exist
+  else if (res.status == 401) {
+    return { valid: false, reason: ValidityReasons.INVALID };
+  }
+  // Key expired
+  else if (res.status == 403) {
+    return { valid: false, reason: ValidityReasons.EXPIRED };
+  }
+  else {
+    return { valid: false, reason: ValidityReasons.UNKNOWN };
+  }
+}
+```
+
+Source: `src/connector/databaseConnector.ts:22-61`
+
+### Endpoint
+
+```
+GET /system/validateAccessKey/:key
+```
+
+### Response Format
+
+```json
+{
+  "id": "org-123",
+  "name": "Organization Name"
+}
+```
+
+## Organization Supporter Status
+
+Check if an organization has supporter status:
+
+```typescript
+private static async checkIsSupporter(orgId: string): Promise<boolean> {
+  try {
+    const res = await fetch(process.env.SUPPORTER_CHECK_URL + "/" + orgId, {
+      method: "get"
+    });
+
+    if (res.status == 200) {
+      return (await res.json()).isSupporter || false;
+    } else {
+      return false;
+    }
+  } catch (e) {
+    Log.error(`Supporter check request failed: ${e}`);
+    return false;
+  }
+}
+```
+
+Source: `src/connector/databaseConnector.ts:134-150`
+
+### Configuration
+
+```bash
+SUPPORTER_CHECK_URL=https://api.example.com/supporter-check
+```
+
+## Match Registration and Updates
+
+The server sends match lifecycle events to the backend.
+
+### Register Match
+
+Called when a new match is created:
+
+```typescript
+public static async registerMatch(match: any) {
+  const { replayLog, eventNumber, timeoutEndTimeout, timeoutRemainingLoop, ...toSend } = match;
+  
+  const res = await this.apiRequest(`system/match/${match.matchId}/register`, "post", {
+    match: toSend
+  });
+
+  if (res.status == 200) {
+    return;
+  } else {
+    Log.error(`Register match encountered an error. HTTP Code: ${res.status}`);
+  }
+}
+```
+
+Source: `src/connector/databaseConnector.ts:63-76`
+
+#### Endpoint
+
+```
+POST /system/match/:matchId/register
+```
+
+#### Request Body
+
+```json
+{
+  "match": {
+    "matchId": "550e8400-e29b-41d4-a716-446655440000",
+    "groupCode": "ABCDEF",
+    "leftTeam": { /* team data */ },
+    "rightTeam": { /* team data */ },
+    "organizationId": "org-123"
+  }
+}
+```
+
+### Update Match
+
+Called periodically as match progresses:
+
+```typescript
+public static async updateMatch(match: any): Promise<void> {
+  const { replayLog, eventNumber, timeoutEndTimeout, timeoutRemainingLoop, ...toSend } = match;
+  
+  const res = await this.apiRequest(`system/match/${match.matchId}/update`, "put", {
+    match: toSend
+  });
+
+  if (res?.status == 200) {
+    return;
+  } else {
+    Log.error(`Update match encountered an error. HTTP Code: ${res.status}`);
+  }
+}
+```
+
+Source: `src/connector/databaseConnector.ts:78-91`
+
+#### Endpoint
+
+```
+PUT /system/match/:matchId/update
+```
+
+### Complete Match
+
+Called when match ends or times out:
+
+```typescript
+public static async completeMatch(match: any): Promise<void> {
+  const { replayLog, eventNumber, timeoutEndTimeout, timeoutRemainingLoop, ...toSend } = match;
+  
+  const res = await this.apiRequest(`system/match/${match.matchId}/complete`, "put", {
+    match: toSend
+  });
+
+  if (res.status == 200) {
+    return;
+  } else {
+    Log.error(`Complete match encountered an error. HTTP Code: ${res.status}`);
+  }
+}
+```
+
+Source: `src/connector/databaseConnector.ts:93-106`
+
+#### Endpoint
+
+```
+PUT /system/match/:matchId/complete
+```
+
+<Warning>
+  Internal fields (`replayLog`, `eventNumber`, `timeoutEndTimeout`, `timeoutRemainingLoop`) are excluded from backend requests to reduce payload size.
+</Warning>
+
+## Stats Backend Integration
+
+Separate integration for collecting detailed match statistics.
+
+### Configuration
+
+```bash
+STATS_BACKEND_URL=https://stats.example.com
+STATS_BACKEND_TOKEN=stats-auth-token
+```
+
+### Stats API Request
+
+```typescript
+private static async statsApiRequest(
+  path: string,
+  method: "get" | "post",
+  body?: any
+): Promise<any> {
+  const res = await fetch(process.env.STATS_BACKEND_URL + "/" + path, {
+    method: method,
+    body: JSON.stringify(body),
+    headers: {
+      "Content-Type": "application/json",
+      "Authentication": process.env.STATS_BACKEND_TOKEN!
+    }
+  });
+
+  if (res.status) {
+    return res;
+  } else {
+    throw new Error(`Stats API request encountered an error. HTTP Code: ${res.status}`);
+  }
+}
+```
+
+Source: `src/connector/databaseConnector.ts:183-207`
+
+<Note>
+  Stats backend uses `Authentication` header instead of `X-User-Token`.
+</Note>
+
+### Add Match to Stats System
+
+```typescript
+public static async statsAddMatch(groupCode: string, matchId: string) {
+  const res = await this.statsApiRequest("addMatch", "post", {
+    code: groupCode,
+    matchUuid: matchId
+  });
+
+  if (res.status == 200) {
+    return;
+  } else {
+    Log.error(`Adding match to stats backend failed. HTTP Code: ${res.status}`);
+  }
+}
+```
+
+Source: `src/connector/databaseConnector.ts:209-224`
+
+#### Endpoint
+
+```
+POST /addMatch
+```
+
+#### Request Body
+
+```json
+{
+  "code": "ABCDEF",
+  "matchUuid": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+### Update Match Region
+
+Determine match region from player ID:
+
+```typescript
+public static async statsUpdateMatchRegion(matchId: string, playerId: string) {
+  const res = await this.statsApiRequest("updateMatchRegion", "post", {
+    matchUuid: matchId,
+    accountPuuid: playerId
+  });
+
+  if (res.status == 200) {
+    return;
+  } else {
+    Log.error(`Updating match region in stats backend failed. HTTP Code: ${res.status}`);
+  }
+}
+```
+
+Source: `src/connector/databaseConnector.ts:226-241`
+
+#### Endpoint
+
+```
+POST /updateMatchRegion
+```
+
+### Fetch Match Stats
+
+Trigger stats collection for a match:
+
+```typescript
+public static async statsFetchStats(matchId: string) {
+  const res = await this.statsApiRequest(`fetchMatchStats`, "post", {
+    matchUuid: matchId
+  });
+
+  if (res.status == 200) {
+    return;
+  } else {
+    Log.error(`Stats backend failed to fetch stats. HTTP Code: ${res.status}`);
+  }
+}
+```
+
+Source: `src/connector/databaseConnector.ts:243-257`
+
+## Playercam System Integration
+
+Integrate with player camera systems for live player footage.
+
+### Configuration
+
+```bash
+PLAYERCAM_URL=https://playercam.example.com
+```
+
+### Get Player Overrides and Cameras
+
+```typescript
+public static async getNameOverridesAndPlayercams(
+  identifier: string, 
+  secret: string
+) {
+  const playercamUrl = process.env.PLAYERCAM_URL;
+  if (!playercamUrl) return;
+
+  const res = await fetch(
+    playercamUrl + "/api/getNameOverridesAndPlayercams/" + identifier + "/" + secret,
+    { method: "get" }
+  );
+
+  if (res.status) {
+    const data = await res.json();
+    if (data.nameOverrides && data.enabledPlayers) {
+      return data as IOverridesPlayercamsData;
+    } else {
+      throw new Error("Invalid response from playercam server");
+    }
+  } else {
+    throw new Error(`API request encountered an error. HTTP Code: ${res.status}`);
+  }
+}
+```
+
+Source: `src/connector/databaseConnector.ts:153-179`
+
+#### Endpoint
+
+```
+GET /api/getNameOverridesAndPlayercams/:identifier/:secret
+```
+
+#### Response Format
+
+```json
+{
+  "nameOverrides": {
+    "player-puuid-1": "CustomName1",
+    "player-puuid-2": "CustomName2"
+  },
+  "enabledPlayers": [
+    "player-puuid-1",
+    "player-puuid-3"
+  ]
+}
+```
+
+## SSE and External Services
+
+The server uses the `eventsource` package for Server-Sent Events:
+
+```json
+{
+  "dependencies": {
+    "eventsource": "^2.0.2"
+  }
+}
+```
+
+Source: `package.json:48`
+
+This enables real-time event streaming from external services.
+
+## Environment Variables Summary
+
+### Backend API
+
+```bash
+# Enable backend integration
+USE_BACKEND=true
+
+# Backend API configuration
+BACKEND_URL=https://api.example.com
+BACKEND_TOKEN=your-backend-token
+
+# Supporter check endpoint
+SUPPORTER_CHECK_URL=https://api.example.com/supporter-check
+```
+
+### Stats Backend
+
+```bash
+# Stats API configuration
+STATS_BACKEND_URL=https://stats.example.com
+STATS_BACKEND_TOKEN=stats-auth-token
+```
+
+### Playercam System
+
+```bash
+# Playercam API configuration
+PLAYERCAM_URL=https://playercam.example.com
+```
+
+## Integration Flow Example
+
+<Steps>
+  <Step title="Client authenticates">
+    Access key is verified with backend:
+    
+    ```typescript
+    const validity = await DatabaseConnector.verifyAccessKey(key);
+    ```
+  </Step>
+  
+  <Step title="Match is created">
+    Match is registered with backend:
+    
+    ```typescript
+    await DatabaseConnector.registerMatch(match);
+    await DatabaseConnector.statsAddMatch(groupCode, matchId);
+    ```
+  </Step>
+  
+  <Step title="Match progresses">
+    Periodic updates sent to backend:
+    
+    ```typescript
+    await DatabaseConnector.updateMatch(match);
+    ```
+  </Step>
+  
+  <Step title="Player region detected">
+    Update stats system with region info:
+    
+    ```typescript
+    await DatabaseConnector.statsUpdateMatchRegion(matchId, playerId);
+    ```
+  </Step>
+  
+  <Step title="Match completes">
+    Finalize match in backend and trigger stats collection:
+    
+    ```typescript
+    await DatabaseConnector.completeMatch(match);
+    await DatabaseConnector.statsFetchStats(matchId);
+    ```
+  </Step>
+</Steps>
+
+## Error Handling
+
+All integration methods include error handling:
+
+```typescript
+try {
+  await DatabaseConnector.registerMatch(match);
+} catch (e) {
+  Log.error(`Failed to register match: ${e}`);
+  // Continue operation - backend failures don't stop match
+}
+```
+
+<Warning>
+  Backend integration failures are logged but don't prevent match operation. Matches can run without backend connectivity.
+</Warning>
+
+## Best Practices
+
+<Steps>
+  <Step title="Use environment-specific configurations">
+    ```bash
+    # Development
+    BACKEND_URL=http://localhost:8000
+    USE_BACKEND=false
+    
+    # Production
+    BACKEND_URL=https://api.production.com
+    USE_BACKEND=true
+    ```
+  </Step>
+  
+  <Step title="Implement retry logic for critical operations">
+    ```typescript
+    async function registerMatchWithRetry(match, maxRetries = 3) {
+      for (let i = 0; i < maxRetries; i++) {
+        try {
+          await DatabaseConnector.registerMatch(match);
+          return;
+        } catch (e) {
+          if (i === maxRetries - 1) throw e;
+          await sleep(1000 * Math.pow(2, i)); // Exponential backoff
+        }
+      }
+    }
+    ```
+  </Step>
+  
+  <Step title="Monitor integration health">
+    ```typescript
+    // Track backend response times
+    const startTime = Date.now();
+    await DatabaseConnector.updateMatch(match);
+    const duration = Date.now() - startTime;
+    
+    if (duration > 5000) {
+      Log.warn(`Backend update took ${duration}ms`);
+    }
+    ```
+  </Step>
+  
+  <Step title="Secure your tokens">
+    Never commit tokens to version control:
+    
+    ```bash
+    # .env (gitignored)
+    BACKEND_TOKEN=prod-token-abc123
+    STATS_BACKEND_TOKEN=stats-token-xyz789
+    ```
+  </Step>
+</Steps>

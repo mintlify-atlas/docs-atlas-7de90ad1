@@ -1,0 +1,370 @@
+---
+title: Local Development
+description: Set up and run Spectra Server locally for development
+---
+
+Get started with local development of Spectra Server. This guide covers environment setup, dependency installation, SSL certificate generation, and running the development server.
+
+## Prerequisites
+
+Before starting, ensure you have the required tools installed:
+
+<CardGroup cols={2}>
+  <Card title="Node.js" icon="node-js">
+    **Version:** 22.x or higher
+    
+    [Download Node.js](https://nodejs.org/en/docs/)
+  </Card>
+  <Card title="Yarn" icon="yarn">
+    **Package Manager:** Yarn (Yarn Berry)
+    
+    [Install Yarn](https://yarnpkg.com/lang/en/)
+  </Card>
+</CardGroup>
+
+<Note>
+  Spectra Server uses **Yarn Berry** (v4.7.0) via Corepack. The `packageManager` field in `package.json` ensures the correct version is used.
+</Note>
+
+## Setup Steps
+
+<Steps>
+  <Step title="Clone the Repository">
+    Clone the Spectra Server repository from GitHub:
+    
+    ```bash
+    git clone https://github.com/ValoSpectra/Spectra-Server.git
+    ```
+    
+    Navigate to the project directory:
+    
+    ```bash
+    cd Spectra-Server
+    ```
+  </Step>
+
+  <Step title="Install Dependencies">
+    Install all required Node.js packages using Yarn:
+    
+    ```bash
+    yarn install
+    ```
+    
+    This will install:
+    - Production dependencies (Express, Socket.IO, etc.)
+    - Development dependencies (TypeScript, ESLint, tsx, etc.)
+    - Optional dependencies for WebSocket performance optimization
+  </Step>
+
+  <Step title="Generate SSL Certificates (Optional)">
+    For local HTTPS/WSS testing, generate self-signed certificates:
+    
+    ```bash
+    openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 \
+      -nodes -keyout keys/server.key -out keys/server.crt -subj "/CN=spectra"
+    ```
+    
+    This creates:
+    - `keys/server.key` - Private key (4096-bit RSA)
+    - `keys/server.crt` - Self-signed certificate (valid for 10 years)
+    
+    <Warning>
+      Self-signed certificates will trigger browser warnings. For development, you can use `INSECURE=true` mode instead.
+    </Warning>
+  </Step>
+
+  <Step title="Configure Environment Variables">
+    Create a `.env` file from the example template:
+    
+    ```bash
+    cp .env.example .env
+    ```
+    
+    Edit the `.env` file to match your setup:
+    
+    <CodeGroup>
+    ```bash With SSL Certificates
+    SERVER_KEY=keys/server.key
+    SERVER_CERT=keys/server.crt
+    INSECURE=false
+    
+    REQUIRE_AUTH_KEY=true
+    AUTH_KEY=your-dev-auth-key
+    ```
+    
+    ```bash Without SSL (Insecure Mode)
+    SERVER_KEY=keys/server.key
+    SERVER_CERT=keys/server.crt
+    INSECURE=true
+    
+    REQUIRE_AUTH_KEY=true
+    AUTH_KEY=your-dev-auth-key
+    ```
+    </CodeGroup>
+    
+    <Info>
+      If you haven't generated SSL certificates, set `INSECURE=true` to run the server without TLS.
+    </Info>
+  </Step>
+
+  <Step title="Start the Development Server">
+    Run the server in development mode with hot-reload:
+    
+    ```bash
+    yarn start
+    ```
+    
+    The server will start with:
+    - **Port 5100** - Incoming WebSocket server (client connections)
+    - **Port 5101** - REST API server (status, previews, etc.)
+    - **Port 5200** - Outgoing WebSocket server (overlay/observer connections)
+    
+    You should see output similar to:
+    ```
+    Extras available on port 5101
+    WebSocket server listening on port 5100
+    Outgoing WebSocket server listening on port 5200
+    ```
+  </Step>
+</Steps>
+
+## Available Scripts
+
+Spectra Server provides several npm scripts for development and testing:
+
+### Development Scripts
+
+<ParamField path="yarn start" type="command">
+  **Start development server** - Runs `yarn dev` with hot-reload using tsx watch mode
+</ParamField>
+
+<ParamField path="yarn dev" type="command">
+  **Development mode** - Uses `tsx watch ./src/index.ts` for automatic restart on file changes
+</ParamField>
+
+<ParamField path="yarn start_single" type="command">
+  **Single run mode** - Starts the server once using `tsx ./src/index.ts` (no watch mode)
+</ParamField>
+
+### Build Scripts
+
+<ParamField path="yarn build" type="command">
+  **Compile TypeScript** - Transpiles TypeScript to JavaScript using `tsc`
+</ParamField>
+
+### Code Quality Scripts
+
+<CodeGroup>
+```bash Linting
+# Check for linting errors
+yarn lint
+
+# Auto-fix linting errors
+yarn lint-fix
+```
+
+```bash Formatting
+# Format code with Prettier
+yarn format
+```
+</CodeGroup>
+
+<ParamField path="yarn lint" type="command">
+  **Run ESLint** - Checks code for style and potential errors
+</ParamField>
+
+<ParamField path="yarn lint-fix" type="command">
+  **Fix ESLint issues** - Automatically fixes auto-fixable linting problems
+</ParamField>
+
+<ParamField path="yarn format" type="command">
+  **Format with Prettier** - Formats all source files according to Prettier rules
+</ParamField>
+
+### Replay Scripts
+
+For testing with recorded match data:
+
+<ParamField path="yarn replay" type="command">
+  **Replay match data** - Runs the replay utility for testing
+</ParamField>
+
+<ParamField path="yarn replay_instant" type="command">
+  **Instant replay** - Replays match data as fast as possible (no delays)
+</ParamField>
+
+<ParamField path="yarn replay_delay" type="command">
+  **Delayed replay** - Replays match data with artificial delays
+</ParamField>
+
+<ParamField path="yarn replay_timestamps" type="command">
+  **Timestamp replay** - Replays using original timestamps from recorded data
+</ParamField>
+
+<ParamField path="yarn replay_manual" type="command">
+  **Manual replay** - Step through replay events manually
+</ParamField>
+
+<ParamField path="yarn replay_file" type="command">
+  **Custom file replay** - Replay a specific game file: `yarn replay_file -- -game customGameTest.replay`
+</ParamField>
+
+## Development Workflow
+
+### Hot Reload Development
+
+The `yarn dev` command uses `tsx watch` to monitor file changes:
+
+```bash
+yarn dev
+```
+
+Any changes to TypeScript files in the `src/` directory will automatically restart the server.
+
+### Testing API Endpoints
+
+Once the server is running, test the REST API:
+
+<CodeGroup>
+```bash Status Endpoint
+curl http://localhost:5101/status
+```
+
+```bash With HTTPS
+curl -k https://localhost:5101/status
+```
+</CodeGroup>
+
+Expected response:
+```json
+{
+  "status": "UP",
+  "matchesRunning": 0
+}
+```
+
+### Connecting with WebSocket Clients
+
+Test WebSocket connectivity:
+
+<CodeGroup>
+```javascript Incoming WebSocket (Port 5100)
+// Client connection
+const io = require('socket.io-client');
+const socket = io('http://localhost:5100');
+
+socket.on('connect', () => {
+  console.log('Connected to incoming WebSocket');
+});
+```
+
+```javascript Outgoing WebSocket (Port 5200)
+// Observer connection
+const io = require('socket.io-client');
+const socket = io('http://localhost:5200');
+
+socket.emit('logon', JSON.stringify({ groupCode: 'TEST123' }));
+```
+</CodeGroup>
+
+## Project Structure
+
+Key directories and files:
+
+```
+Spectra-Server/
+├── src/
+│   ├── index.ts                 # Main entry point
+│   ├── connector/
+│   │   ├── websocketIncoming.ts # Client WebSocket server (5100)
+│   │   ├── websocketOutgoing.ts # Observer WebSocket server (5200)
+│   │   └── databaseConnector.ts # Backend integration
+│   ├── controller/
+│   │   └── MatchController.ts   # Match lifecycle management
+│   ├── model/
+│   │   ├── Match.ts             # Match data model
+│   │   └── eventData.ts         # Event type definitions
+│   └── util/
+│       ├── Logging.ts           # Logging utility
+│       └── previews/            # Preview generation
+├── keys/                        # SSL certificates (gitignored)
+├── .env                         # Environment config (gitignored)
+├── .env.example                 # Environment template
+├── package.json                 # Dependencies and scripts
+├── tsconfig.json                # TypeScript configuration
+└── Dockerfile                   # Container configuration
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Port already in use">
+    If ports 5100, 5101, or 5200 are already in use:
+    
+    ```bash
+    # Check what's using the port
+    lsof -i :5100
+    lsof -i :5101
+    lsof -i :5200
+    
+    # Kill the process
+    kill -9 <PID>
+    ```
+  </Accordion>
+
+  <Accordion title="SSL certificate errors">
+    If you encounter SSL/TLS errors:
+    
+    1. Verify certificate files exist:
+       ```bash
+       ls -la keys/
+       ```
+    
+    2. Set `INSECURE=true` in `.env` for development
+    
+    3. Regenerate certificates if corrupted:
+       ```bash
+       rm keys/server.key keys/server.crt
+       openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 \
+         -nodes -keyout keys/server.key -out keys/server.crt -subj "/CN=spectra"
+       ```
+  </Accordion>
+
+  <Accordion title="Module not found errors">
+    If you see module import errors:
+    
+    ```bash
+    # Clear node_modules and reinstall
+    rm -rf node_modules
+    yarn install
+    
+    # Clear Yarn cache if needed
+    yarn cache clean
+    ```
+  </Accordion>
+
+  <Accordion title="TypeScript compilation errors">
+    Ensure you're using the correct TypeScript version:
+    
+    ```bash
+    # Check TypeScript version
+    yarn tsc --version
+    
+    # Should be 5.8.x or higher
+    
+    # Run type checking
+    yarn build
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="sliders" href="/deployment/configuration">
+    Learn about all environment variables and configuration options
+  </Card>
+  <Card title="Docker Deployment" icon="docker" href="/deployment/docker">
+    Deploy with Docker for production environments
+  </Card>
+</CardGroup>

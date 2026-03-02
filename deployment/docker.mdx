@@ -1,0 +1,366 @@
+---
+title: Docker Deployment
+description: Deploy Spectra Server using Docker and Docker Compose
+---
+
+Deploy Spectra Server in a containerized environment using Docker. This guide covers the complete Docker setup, including the Dockerfile configuration, Docker Compose orchestration, and production deployment considerations.
+
+## Quick Start with Docker Compose
+
+The fastest way to get started is using Docker Compose:
+
+```bash
+docker-compose up -d
+```
+
+This will build and start the Spectra Server with the configuration defined in `docker-compose.yml`.
+
+## Docker Compose Configuration
+
+The `docker-compose.yml` file defines the complete service configuration:
+
+```yaml docker-compose.yml
+services:
+  valo-spectra-server:
+    image: valospectra/server
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "5100:5100"
+      - "5101:5101"
+      - "5200:5200"
+    volumes:
+      - ./keys:/app/keys
+    environment:
+      - INSECURE=true
+```
+
+### Port Mappings
+
+Spectra Server exposes three ports for different functionalities:
+
+<ParamField path="5100" type="WebSocket">
+  **Incoming WebSocket Server** - Accepts connections from Spectra clients for real-time game data ingestion
+</ParamField>
+
+<ParamField path="5101" type="HTTP/HTTPS">
+  **REST API Server** - Provides status endpoints, preview creation, and team information queries
+</ParamField>
+
+<ParamField path="5200" type="WebSocket">
+  **Outgoing WebSocket Server** - Streams processed match data to connected observers and overlays
+</ParamField>
+
+### Volume Mounts
+
+The `./keys:/app/keys` volume mount is used to persist SSL/TLS certificates:
+
+- Place your `server.key` and `server.crt` files in the `./keys` directory on the host
+- The container will use these certificates when `INSECURE=false`
+- If certificates are not provided, they will be auto-generated on container startup
+
+## Dockerfile Breakdown
+
+The Spectra Server Dockerfile uses a multi-stage approach optimized for Node.js applications:
+
+<Steps>
+  <Step title="Base Image">
+    ```dockerfile
+    FROM node:22-alpine3.19
+    ```
+    
+    Uses Node.js 22 on Alpine Linux 3.19 for a minimal footprint and optimal performance.
+  </Step>
+
+  <Step title="Working Directory">
+    ```dockerfile
+    WORKDIR /app
+    ```
+    
+    Sets `/app` as the working directory for all subsequent commands.
+  </Step>
+
+  <Step title="Dependency Files">
+    ```dockerfile
+    COPY yarn.lock package.json ./
+    ```
+    
+    Copies package management files first to leverage Docker layer caching.
+  </Step>
+
+  <Step title="System Dependencies">
+    ```dockerfile
+    RUN apk upgrade --update-cache --available && \
+        apk add openssl && \
+        rm -rf /var/cache/apk/*
+    ```
+    
+    Installs OpenSSL for certificate generation and security operations, then cleans up the package cache.
+  </Step>
+
+  <Step title="Package Manager Setup">
+    ```dockerfile
+    RUN corepack enable
+    RUN yarn install
+    ```
+    
+    Enables Corepack for Yarn Berry support and installs Node.js dependencies.
+  </Step>
+
+  <Step title="Application Code">
+    ```dockerfile
+    COPY . .
+    ```
+    
+    Copies the entire application source code into the container.
+  </Step>
+
+  <Step title="Port Exposure">
+    ```dockerfile
+    EXPOSE 5100
+    EXPOSE 5101
+    EXPOSE 5200
+    ```
+    
+    Documents which ports the container will listen on at runtime.
+  </Step>
+
+  <Step title="Environment Variables">
+    ```dockerfile
+    ENV INSECURE=false
+    ENV SERVER_KEY=/app/keys/server.key
+    ENV SERVER_CERT=/app/keys/server.crt
+    ```
+    
+    Sets default environment variables for SSL/TLS configuration. By default, secure mode is enabled.
+  </Step>
+
+  <Step title="SSL Key Directory">
+    ```dockerfile
+    RUN mkdir -p /app/keys
+    ```
+    
+    Creates the directory for SSL certificates if it doesn't exist.
+  </Step>
+
+  <Step title="Entrypoint">
+    ```dockerfile
+    ENTRYPOINT [ "/app/entrypoint.sh" ]
+    ```
+    
+    Uses the entrypoint script to handle certificate generation and server startup.
+  </Step>
+</Steps>
+
+## Entrypoint Script
+
+The `entrypoint.sh` script handles certificate generation and server startup:
+
+```bash entrypoint.sh
+#!/bin/sh
+if [ ! -f $SERVER_KEY ] || [ ! -f $SERVER_CERT ]; then
+  openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
+  -keyout $SERVER_KEY -out $SERVER_CERT -subj '/CN=spectra'; \
+fi 
+yarn start_single --host 0.0.0.0
+```
+
+**How it works:**
+
+1. Checks if SSL certificate and key files exist
+2. If missing, generates self-signed certificates valid for 10 years
+3. Starts the server listening on all interfaces (0.0.0.0)
+
+## Building the Docker Image
+
+Build the image manually with custom tags:
+
+```bash
+docker build -t valospectra/server:latest .
+```
+
+For production with a specific version:
+
+```bash
+docker build -t valospectra/server:0.3.2 .
+```
+
+## Running the Container
+
+### With Environment Variables
+
+```bash
+docker run -d \
+  -p 5100:5100 \
+  -p 5101:5101 \
+  -p 5200:5200 \
+  -v $(pwd)/keys:/app/keys \
+  -e INSECURE=false \
+  -e REQUIRE_AUTH_KEY=true \
+  -e AUTH_KEY=your-secret-key \
+  valospectra/server:latest
+```
+
+### With Environment File
+
+```bash
+docker run -d \
+  -p 5100:5100 \
+  -p 5101:5101 \
+  -p 5200:5200 \
+  -v $(pwd)/keys:/app/keys \
+  --env-file .env \
+  valospectra/server:latest
+```
+
+## Health Checks and Verification
+
+<Steps>
+  <Step title="Check Container Status">
+    ```bash
+    docker ps
+    ```
+    
+    Verify the container is running and all ports are mapped correctly.
+  </Step>
+
+  <Step title="View Container Logs">
+    ```bash
+    docker logs -f <container-id>
+    ```
+    
+    Monitor the server startup and check for any errors. You should see:
+    - `Extras available on port 5101` (or with TLS suffix)
+    - WebSocket server initialization messages
+  </Step>
+
+  <Step title="Test Status Endpoint">
+    ```bash
+    curl http://localhost:5101/status
+    ```
+    
+    Expected response:
+    ```json
+    {
+      "status": "UP",
+      "matchesRunning": 0
+    }
+    ```
+  </Step>
+
+  <Step title="Verify SSL Certificates">
+    If running in secure mode (`INSECURE=false`):
+    
+    ```bash
+    docker exec <container-id> ls -la /app/keys
+    ```
+    
+    Should show `server.key` and `server.crt` files.
+  </Step>
+</Steps>
+
+## Production Recommendations
+
+<Warning>
+  **Do not use INSECURE=true in production.** Always use proper SSL/TLS certificates for production deployments.
+</Warning>
+
+<AccordionGroup>
+  <Accordion title="SSL/TLS Certificates">
+    - Use certificates from a trusted Certificate Authority (CA)
+    - Place certificates in a persistent volume mount
+    - Set appropriate file permissions (600 for private keys)
+    - Regularly renew certificates before expiration
+  </Accordion>
+
+  <Accordion title="Resource Limits">
+    Add resource constraints to prevent resource exhaustion:
+    
+    ```yaml docker-compose.yml
+    services:
+      valo-spectra-server:
+        # ... other config
+        deploy:
+          resources:
+            limits:
+              cpus: '2.0'
+              memory: 2G
+            reservations:
+              cpus: '1.0'
+              memory: 1G
+    ```
+  </Accordion>
+
+  <Accordion title="Logging Configuration">
+    Configure logging drivers for better log management:
+    
+    ```yaml docker-compose.yml
+    services:
+      valo-spectra-server:
+        # ... other config
+        logging:
+          driver: "json-file"
+          options:
+            max-size: "10m"
+            max-file: "3"
+    ```
+  </Accordion>
+
+  <Accordion title="Network Configuration">
+    Use custom networks for better isolation:
+    
+    ```yaml docker-compose.yml
+    services:
+      valo-spectra-server:
+        # ... other config
+        networks:
+          - spectra-network
+    
+    networks:
+      spectra-network:
+        driver: bridge
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Container exits immediately">
+    Check logs for errors:
+    ```bash
+    docker logs <container-id>
+    ```
+    
+    Common causes:
+    - Missing environment variables
+    - Port conflicts with host system
+    - Invalid certificate paths
+  </Accordion>
+
+  <Accordion title="Cannot connect to WebSocket servers">
+    - Verify ports are properly exposed: `docker port <container-id>`
+    - Check firewall rules on the host system
+    - Ensure the container is running: `docker ps`
+    - Test connectivity: `telnet localhost 5100`
+  </Accordion>
+
+  <Accordion title="SSL certificate errors">
+    - Verify certificate files exist in the mounted volume
+    - Check file permissions inside the container
+    - Ensure `SERVER_KEY` and `SERVER_CERT` paths are correct
+    - For development, set `INSECURE=true` to bypass SSL
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="sliders" href="/deployment/configuration">
+    Configure environment variables and server settings
+  </Card>
+  <Card title="Local Development" icon="code" href="/deployment/local-development">
+    Set up local development environment
+  </Card>
+</CardGroup>

@@ -1,0 +1,456 @@
+---
+title: Configuration
+description: Complete environment variable reference for Spectra Server
+---
+
+Spectra Server is configured primarily through environment variables defined in a `.env` file. This reference covers all available configuration options, organized by category.
+
+## Environment File Setup
+
+Create a `.env` file in the project root:
+
+```bash
+cp .env.example .env
+```
+
+Edit the file to match your deployment requirements. The server uses the `dotenv` package to load these variables at startup.
+
+## SSL/TLS Configuration
+
+Configure secure connections using SSL/TLS certificates.
+
+<ParamField path="SERVER_KEY" type="string" default="keys/server.key">
+  **Path to SSL private key file**
+  
+  The private key used for HTTPS and secure WebSocket (WSS) connections. This file should have restrictive permissions (600) to prevent unauthorized access.
+  
+  ```bash .env
+  SERVER_KEY=keys/server.key
+  ```
+  
+  <Note>
+    For Docker deployments, use `/app/keys/server.key` as the path.
+  </Note>
+</ParamField>
+
+<ParamField path="SERVER_CERT" type="string" default="keys/server.crt">
+  **Path to SSL certificate file**
+  
+  The SSL/TLS certificate corresponding to the private key. Can be a self-signed certificate for development or a CA-signed certificate for production.
+  
+  ```bash .env
+  SERVER_CERT=keys/server.crt
+  ```
+  
+  Generate a self-signed certificate:
+  ```bash
+  openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 \
+    -nodes -keyout keys/server.key -out keys/server.crt -subj "/CN=spectra"
+  ```
+</ParamField>
+
+<ParamField path="INSECURE" type="boolean" default="true">
+  **Enable insecure (HTTP/WS) mode**
+  
+  When set to `true`, the server runs without SSL/TLS encryption using HTTP and plain WebSocket connections. When `false`, requires valid `SERVER_KEY` and `SERVER_CERT`.
+  
+  ```bash .env
+  INSECURE=true  # For development
+  INSECURE=false # For production
+  ```
+  
+  <Warning>
+    **Never use `INSECURE=true` in production.** Always use proper SSL/TLS certificates for production deployments to protect data in transit.
+  </Warning>
+  
+  **Affected services:**
+  - REST API server (port 5101)
+  - Incoming WebSocket server (port 5100)
+  - Outgoing WebSocket server (port 5200)
+</ParamField>
+
+## Authentication Configuration
+
+Control client authentication and access control.
+
+<ParamField path="REQUIRE_AUTH_KEY" type="boolean" default="true">
+  **Require authentication key for client connections**
+  
+  When enabled, all client connections must provide a valid authentication key. Set to `false` to allow connections without authentication (not recommended).
+  
+  ```bash .env
+  REQUIRE_AUTH_KEY=true
+  ```
+  
+  <Info>
+    Authentication is validated during the `obs_logon` event when clients connect to the incoming WebSocket server (port 5100).
+  </Info>
+</ParamField>
+
+<ParamField path="AUTH_KEY" type="string" default="DEBUG_REMOVE_ME">
+  **Static authentication key**
+  
+  The authentication key that clients must provide to connect. Used when `USE_BACKEND=false` or as a fallback when backend authentication is unavailable.
+  
+  ```bash .env
+  AUTH_KEY=your-secure-random-key-here
+  ```
+  
+  <Warning>
+    Change the default value `DEBUG_REMOVE_ME` before deployment. Use a strong, randomly generated key.
+  </Warning>
+  
+  Generate a secure random key:
+  ```bash
+  openssl rand -hex 32
+  ```
+</ParamField>
+
+## Backend Integration
+
+Configure integration with external backend services for advanced features.
+
+<ParamField path="USE_BACKEND" type="boolean" default="false">
+  **Enable backend service integration**
+  
+  When enabled, the server connects to a backend API for:
+  - Advanced authentication and authorization
+  - Multi-organization support
+  - Supporter status verification
+  - Match data persistence
+  
+  ```bash .env
+  USE_BACKEND=true
+  ```
+  
+  Requires additional backend-related variables when enabled.
+</ParamField>
+
+<ParamField path="BACKEND_URL" type="string">
+  **Backend API base URL**
+  
+  The base URL of the backend service API. Used for organization verification, key validation, and data persistence.
+  
+  ```bash .env
+  BACKEND_URL=https://api.example.com
+  ```
+  
+  Referenced in `src/connector/databaseConnector.ts:114` for API requests.
+</ParamField>
+
+<ParamField path="BACKEND_TOKEN" type="string">
+  **Backend API authentication token**
+  
+  The authentication token sent as `X-User-Token` header for backend API requests.
+  
+  ```bash .env
+  BACKEND_TOKEN=your-backend-api-token
+  ```
+  
+  <Info>
+    This token authenticates the Spectra Server to the backend service, not the end clients.
+  </Info>
+</ParamField>
+
+<ParamField path="SUPPORTER_CHECK_URL" type="string">
+  **Supporter status verification endpoint**
+  
+  The URL for checking organization supporter status. Used to enable premium features for supporters.
+  
+  ```bash .env
+  SUPPORTER_CHECK_URL=https://something.de/endpoint
+  ```
+  
+  The server appends `/{orgId}` to this URL when checking supporter status.
+</ParamField>
+
+<ParamField path="STATS_BACKEND_URL" type="string">
+  **Statistics backend API URL**
+  
+  The base URL for the statistics backend service, used for advanced analytics and data aggregation.
+  
+  ```bash .env
+  STATS_BACKEND_URL=https://stats.example.com
+  ```
+</ParamField>
+
+<ParamField path="STATS_BACKEND_TOKEN" type="string">
+  **Statistics backend authentication token**
+  
+  The authentication token sent as `Authentication` header for statistics backend API requests.
+  
+  ```bash .env
+  STATS_BACKEND_TOKEN=your-stats-token
+  ```
+</ParamField>
+
+<ParamField path="PLAYERCAM_URL" type="string">
+  **Player camera service URL**
+  
+  The URL for the player camera service integration, if available.
+  
+  ```bash .env
+  PLAYERCAM_URL=https://playercam.example.com
+  ```
+</ParamField>
+
+## Discord OAuth Integration
+
+Configure Discord OAuth for supporter verification (requires `USE_BACKEND=true`).
+
+<ParamField path="DISCORD_CLIENT_ID" type="string">
+  **Discord application client ID**
+  
+  The OAuth2 client ID from your Discord application settings.
+  
+  ```bash .env
+  DISCORD_CLIENT_ID=123456789012345678
+  ```
+  
+  Get this from the [Discord Developer Portal](https://discord.com/developers/applications).
+</ParamField>
+
+<ParamField path="DISCORD_CLIENT_SECRET" type="string">
+  **Discord application client secret**
+  
+  The OAuth2 client secret for token exchange.
+  
+  ```bash .env
+  DISCORD_CLIENT_SECRET=your-discord-client-secret
+  ```
+  
+  <Warning>
+    Keep this secret secure. Never commit it to version control.
+  </Warning>
+</ParamField>
+
+<ParamField path="DISCORD_REDIRECT_URI" type="string">
+  **Discord OAuth callback URL**
+  
+  The redirect URI configured in your Discord application for OAuth callbacks.
+  
+  ```bash .env
+  DISCORD_REDIRECT_URI=https://yourdomain.com/client/oauth-callback
+  ```
+  
+  This must match exactly with the redirect URI in Discord Developer Portal.
+</ParamField>
+
+<ParamField path="DISCORD_OAUTH_URL" type="string">
+  **Discord OAuth token endpoint**
+  
+  The Discord API endpoint for exchanging authorization codes for access tokens.
+  
+  ```bash .env
+  DISCORD_OAUTH_URL=https://discord.com/api/oauth2/token
+  ```
+</ParamField>
+
+<ParamField path="DISCORD_USER_URL" type="string">
+  **Discord user info endpoint**
+  
+  The Discord API endpoint for retrieving user information.
+  
+  ```bash .env
+  DISCORD_USER_URL=https://discord.com/api/users/@me
+  ```
+</ParamField>
+
+<ParamField path="SPECTRA_CLIENT_DEEPLINK" type="string">
+  **Spectra client deep link URL**
+  
+  The deep link URL scheme for redirecting users to the Spectra client after authentication.
+  
+  ```bash .env
+  SPECTRA_CLIENT_DEEPLINK=spectra://auth
+  ```
+  
+  Query parameters `userId`, `username`, and `avatar` are appended automatically.
+</ParamField>
+
+## Tebex Integration
+
+Configure Tebex e-commerce integration for supporter packages (requires `USE_BACKEND=true`).
+
+<ParamField path="TEBEX_BASE_URL" type="string">
+  **Tebex API base URL**
+  
+  The base URL for Tebex API requests.
+  
+  ```bash .env
+  TEBEX_BASE_URL=https://plugin.tebex.io
+  ```
+</ParamField>
+
+<ParamField path="TEBEX_STORE_ID" type="string">
+  **Tebex store identifier**
+  
+  Your Tebex store ID for package retrieval.
+  
+  ```bash .env
+  TEBEX_STORE_ID=your-store-id
+  ```
+</ParamField>
+
+<ParamField path="TEBEX_EXTENSION_ID" type="string">
+  **Tebex extension identifier**
+  
+  The extension ID for Tebex integration.
+  
+  ```bash .env
+  TEBEX_EXTENSION_ID=your-extension-id
+  ```
+</ParamField>
+
+## Configuration Examples
+
+### Minimal Development Setup
+
+For local development without SSL or backend:
+
+```bash .env
+SERVER_KEY=keys/server.key
+SERVER_CERT=keys/server.crt
+INSECURE=true
+
+REQUIRE_AUTH_KEY=true
+AUTH_KEY=dev-auth-key-12345
+```
+
+### Production with SSL
+
+For production deployment with SSL certificates:
+
+```bash .env
+SERVER_KEY=/app/keys/production.key
+SERVER_CERT=/app/keys/production.crt
+INSECURE=false
+
+REQUIRE_AUTH_KEY=true
+AUTH_KEY=<generate-secure-random-key>
+```
+
+### Full Backend Integration
+
+For production with all backend features enabled:
+
+```bash .env
+# SSL Configuration
+SERVER_KEY=/app/keys/production.key
+SERVER_CERT=/app/keys/production.crt
+INSECURE=false
+
+# Authentication
+REQUIRE_AUTH_KEY=true
+AUTH_KEY=<fallback-auth-key>
+
+# Backend Integration
+USE_BACKEND=true
+BACKEND_URL=https://api.valospectra.com
+BACKEND_TOKEN=<backend-api-token>
+SUPPORTER_CHECK_URL=https://api.valospectra.com/supporter
+STATS_BACKEND_URL=https://stats.valospectra.com
+STATS_BACKEND_TOKEN=<stats-api-token>
+
+# Discord OAuth
+DISCORD_CLIENT_ID=123456789012345678
+DISCORD_CLIENT_SECRET=<discord-secret>
+DISCORD_REDIRECT_URI=https://yourdomain.com/client/oauth-callback
+DISCORD_OAUTH_URL=https://discord.com/api/oauth2/token
+DISCORD_USER_URL=https://discord.com/api/users/@me
+SPECTRA_CLIENT_DEEPLINK=spectra://auth
+
+# Tebex Integration
+TEBEX_BASE_URL=https://plugin.tebex.io
+TEBEX_STORE_ID=<store-id>
+TEBEX_EXTENSION_ID=<extension-id>
+```
+
+## Security Best Practices
+
+<AccordionGroup>
+  <Accordion title="Environment Variable Security">
+    - Never commit `.env` files to version control
+    - Add `.env` to `.gitignore`
+    - Use strong, randomly generated keys and tokens
+    - Rotate secrets regularly
+    - Use different credentials for development and production
+  </Accordion>
+
+  <Accordion title="SSL/TLS Configuration">
+    - Use certificates from a trusted Certificate Authority in production
+    - Set appropriate file permissions (600) for private keys
+    - Regularly renew certificates before expiration
+    - Never use `INSECURE=true` in production environments
+  </Accordion>
+
+  <Accordion title="Authentication Keys">
+    - Generate cryptographically secure random keys
+    - Use at least 32 bytes (256 bits) of entropy
+    - Never use default values like `DEBUG_REMOVE_ME`
+    - Implement key rotation procedures
+  </Accordion>
+
+  <Accordion title="Backend Tokens">
+    - Store backend tokens securely
+    - Use environment-specific tokens
+    - Monitor token usage and revoke compromised tokens
+    - Implement least-privilege access
+  </Accordion>
+</AccordionGroup>
+
+## Validation and Testing
+
+Verify your configuration after setup:
+
+<Steps>
+  <Step title="Validate Environment File">
+    Ensure all required variables are set:
+    
+    ```bash
+    cat .env | grep -v "^#" | grep -v "^$"
+    ```
+  </Step>
+
+  <Step title="Test Server Startup">
+    Start the server and check for configuration errors:
+    
+    ```bash
+    yarn start
+    ```
+    
+    Look for:
+    - SSL certificate loading messages
+    - Port binding confirmations
+    - Backend connection status
+  </Step>
+
+  <Step title="Verify SSL Configuration">
+    If `INSECURE=false`, test SSL certificate:
+    
+    ```bash
+    openssl s_client -connect localhost:5101
+    ```
+  </Step>
+
+  <Step title="Test Authentication">
+    Verify authentication is working:
+    
+    ```bash
+    curl http://localhost:5101/status
+    ```
+    
+    Should return server status.
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Docker Deployment" icon="docker" href="/deployment/docker">
+    Deploy with Docker using these configuration options
+  </Card>
+  <Card title="Local Development" icon="code" href="/deployment/local-development">
+    Set up your local development environment
+  </Card>
+</CardGroup>

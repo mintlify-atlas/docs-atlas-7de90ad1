@@ -1,0 +1,426 @@
+---
+title: Replay System
+description: Record and replay match events for testing, debugging, and demonstration purposes
+---
+
+The Spectra Server replay system allows you to record match events and play them back with various timing modes. This is invaluable for testing overlays, debugging issues, and demonstrating features.
+
+## Replay System Overview
+
+The replay system consists of three main components:
+
+1. **Replay Recording** - Matches automatically record events to replay log
+2. **Replay Player** - Reads replay files and controls playback
+3. **Replay Connector** - Connects to server and sends replay events
+
+Source: `src/replay/` directory
+
+## Recording Match Events
+
+Matches automatically record events when configured. Each match maintains a replay log:
+
+```typescript
+private replayLog: IAuthedData[] = [];
+```
+
+Events are timestamped and appended to the log as they occur:
+
+```typescript
+data.timestamp = Date.now();
+// Event is processed and added to replay log
+```
+
+Source: `src/controller/MatchController.ts:97`
+
+## Replay File Format
+
+Replay files are JSON-formatted with a header and event array:
+
+```json
+{
+  "obsName": "Observer Name",
+  "groupCode": "REPLAY",
+  "clientVersion": "1.2.0",
+  "leftTeam": {
+    "name": "Team A",
+    "tricode": "TMA",
+    "url": "https://example.com/logo.png",
+    "attackStart": true
+  },
+  "rightTeam": {
+    "name": "Team B",
+    "tricode": "TMB",
+    "url": "https://example.com/logo.png",
+    "attackStart": false
+  }
+}
+{
+  "type": "round_info",
+  "groupCode": "REPLAY",
+  "timestamp": 1234567890,
+  "data": { /* event data */ }
+}
+{
+  "type": "scoreboard",
+  "groupCode": "REPLAY",
+  "timestamp": 1234567891,
+  "data": { /* event data */ }
+}
+```
+
+Each event is a separate JSON object on its own line.
+
+## Replay Modes
+
+The replay system supports four playback modes:
+
+### Instant Mode
+
+Sends all events immediately without delays:
+
+```typescript
+private playInstant() {
+  while (this.sendNextEvent()) {
+    /* empty on purpose */
+  }
+  this.finished();
+}
+```
+
+Source: `src/replay/ReplayPlayer.ts:89-94`
+
+**Use case**: Testing event processing logic, quick overlay previews
+
+### Delay Mode
+
+Sends events with a fixed delay between each event:
+
+```typescript
+private playDelay() {
+  const intervalId = setInterval(() => {
+    if (!this.sendNextEvent()) {
+      clearInterval(intervalId);
+      this.finished();
+    }
+  }, this.delay); // Default 500ms
+}
+```
+
+Source: `src/replay/ReplayPlayer.ts:96-104`
+
+**Use case**: Controlled playback for demonstrations, slower debugging
+
+### Timestamps Mode
+
+Replays events using original timing from recording:
+
+```typescript
+private playTimestamps() {
+  if (this.sendNextEvent()) {
+    const timestamp1 = this.replayData[this.currentReplayIndex - 1].timestamp;
+    const timestamp2 = this.replayData[this.currentReplayIndex].timestamp;
+    const nextDelay = timestamp2 - timestamp1;
+    setTimeout(() => this.playTimestamps(), nextDelay);
+  } else {
+    this.finished();
+  }
+}
+```
+
+Source: `src/replay/ReplayPlayer.ts:106-116`
+
+**Use case**: Realistic match recreation, timing-sensitive testing
+
+### Manual Mode
+
+Allows manual control via keyboard input:
+
+```typescript
+private playManual() {
+  const stream = process.stdin;
+  stream.on("data", (data) => {
+    const s = data.toString();
+    const amount = Number.parseInt(s);
+    
+    if (s == "\n") {
+      // Send next event
+      this.sendNextEvent();
+    } else if (s == "exit\n") {
+      // Stop replay
+      ready = false;
+    } else if (s == "go\n") {
+      // Send all remaining events
+      const interval = setInterval(() => {
+        if (!this.sendNextEvent()) {
+          clearInterval(interval);
+        }
+      }, 1);
+    } else if (!Number.isNaN(amount)) {
+      // Send next N events
+      for (let i = 0; i < amount; i++) {
+        this.sendNextEvent();
+      }
+    }
+  });
+}
+```
+
+Source: `src/replay/ReplayPlayer.ts:118-153`
+
+**Use case**: Step-by-step debugging, precise event control
+
+## NPM Scripts
+
+The server includes convenient npm scripts for replay:
+
+```json
+{
+  "scripts": {
+    "replay": "tsx ./src/replay/replay.ts",
+    "replay_instant": "tsx ./src/replay/replay.ts -instant",
+    "replay_delay": "tsx ./src/replay/replay.ts -delay",
+    "replay_timestamps": "tsx ./src/replay/replay.ts -timestamps",
+    "replay_manual": "tsx ./src/replay/replay.ts -manual",
+    "replay_file": "yarn run replay_instant -- -game customGameTest.replay"
+  }
+}
+```
+
+Source: `package.json:19-24`
+
+### Running Replays
+
+<CodeGroup>
+```bash Instant Mode
+yarn replay_instant -game match.replay
+```
+
+```bash Delay Mode (500ms)
+yarn replay_delay -game match.replay
+```
+
+```bash Custom Delay
+yarn replay -delay 1000 -game match.replay
+```
+
+```bash Timestamps Mode
+yarn replay_timestamps -game match.replay
+```
+
+```bash Manual Mode
+yarn replay_manual -game match.replay
+```
+
+```bash Custom Server
+yarn replay_instant -game match.replay -server https://server.example.com:5100
+```
+</CodeGroup>
+
+## Command Line Parameters
+
+The replay script accepts the following parameters:
+
+| Parameter | Description | Example |
+|-----------|-------------|----------|
+| `-instant` | Use instant replay mode | `-instant` |
+| `-delay [ms]` | Use delay mode with specified milliseconds | `-delay 1000` |
+| `-timestamps` | Use original event timestamps | `-timestamps` |
+| `-manual` | Enable manual control mode | `-manual` |
+| `-game [file]` | Specify replay file | `-game match.replay` |
+| `-server [url]` | Override server URL | `-server http://localhost:5100` |
+
+Source: `src/replay/replay.ts:12-50`
+
+## Replay Player Implementation
+
+### Loading Replay Files
+
+```typescript
+public loadReplayFile(filePath: string) {
+  const replayContent = readFileSync(filePath).toString();
+  const replayObj = JSON.parse(`[${replayContent}]`);
+  this.replayHeaderData = replayObj.shift();
+  this.replayData = replayObj;
+}
+```
+
+Source: `src/replay/ReplayPlayer.ts:29-38`
+
+### Sending Events
+
+```typescript
+private sendNextEvent(): boolean {
+  if (this.currentReplayIndex % 50 === 0) {
+    Log.info(`Current Event: ${this.currentReplayIndex}`);
+  }
+  
+  this.connector.sendReplayData(this.replayData[this.currentReplayIndex]);
+  
+  // Check if game has ended
+  if (
+    this.replayData[this.currentReplayIndex].type == "round_info" &&
+    (this.replayData[this.currentReplayIndex].data as IFormattedRoundInfo).roundPhase == "game_end"
+  ) {
+    return false; // Stop replay
+  }
+  
+  this.currentReplayIndex++;
+  return this.currentReplayIndex < this.replayData.length;
+}
+```
+
+Source: `src/replay/ReplayPlayer.ts:66-80`
+
+## Replay Connector Service
+
+The ReplayConnectorService handles WebSocket communication:
+
+```typescript
+public constructor(ingestServerUrl: string) {
+  this.ingestServerUrl = ingestServerUrl;
+}
+
+public setAuthValues(
+  obsName: string,
+  groupCode: string,
+  accessKey: string,
+  leftTeam: AuthTeam,
+  rightTeam: AuthTeam,
+  clientVersion: string
+) {
+  this.obsName = obsName;
+  this.groupCode = groupCode;
+  this.key = accessKey;
+  this.leftTeam = leftTeam;
+  this.rightTeam = rightTeam;
+  this.clientVersion = clientVersion;
+}
+```
+
+Source: `src/replay/ReplayConnectorService.ts:29-47`
+
+### Authentication
+
+```typescript
+private handleAuthProcess() {
+  return new Promise<void>((resolve, reject) => {
+    this.ws = io.connect(this.ingestServerUrl);
+
+    const authData: IAuthenticationData = {
+      type: DataTypes.AUTH,
+      clientVersion: this.clientVersion,
+      obsName: this.obsName,
+      groupCode: this.groupCode,
+      key: this.key,
+      leftTeam: this.leftTeam,
+      rightTeam: this.rightTeam,
+      toolsData: { /* default tools data */ }
+    };
+    
+    this.ws.emit("obs_logon", JSON.stringify(authData));
+    
+    this.ws.once("obs_logon_ack", (msg) => {
+      const json = JSON.parse(msg.toString());
+      if (json.value === true) {
+        this.enabled = true;
+        resolve();
+      } else {
+        reject();
+      }
+    });
+  });
+}
+```
+
+Source: `src/replay/ReplayConnectorService.ts:64-180`
+
+### Sending Replay Data
+
+```typescript
+public sendReplayData(data: IAuthedData) {
+  if (this.enabled) {
+    this.ws.emit("obs_data", JSON.stringify(data));
+  }
+}
+```
+
+Source: `src/replay/ReplayConnectorService.ts:210-217`
+
+## Use Cases
+
+### Testing Overlays
+
+```bash
+# Test overlay with instant replay
+yarn replay_instant -game test-match.replay
+
+# Test overlay animations with delays
+yarn replay -delay 2000 -game test-match.replay
+```
+
+### Debugging Issues
+
+```bash
+# Step through events manually to find issue
+yarn replay_manual -game problematic-match.replay
+
+# Commands in manual mode:
+# Press Enter: Next event
+# Type number + Enter: Skip N events
+# Type "go" + Enter: Finish replay
+# Type "exit" + Enter: Stop replay
+```
+
+### Demonstration
+
+```bash
+# Replay match with realistic timing
+yarn replay_timestamps -game demo-match.replay
+```
+
+### Integration Testing
+
+```bash
+# Test against staging server
+yarn replay_instant -game match.replay -server https://staging.example.com:5100
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Create diverse replay files">
+    Record matches with different scenarios:
+    - Close games (12-14)
+    - Blowouts (13-3)
+    - Overtime matches
+    - Different game phases (pistol, buy, eco)
+  </Step>
+  
+  <Step title="Use appropriate modes">
+    - **Instant**: Quick tests, CI/CD pipelines
+    - **Delay**: Live demonstrations
+    - **Timestamps**: Realistic simulation
+    - **Manual**: Debugging specific events
+  </Step>
+  
+  <Step title="Version replay files">
+    Include client version in replay filename:
+    ```
+    match-v1.2.0-overtime.replay
+    match-v1.3.0-normal.replay
+    ```
+  </Step>
+  
+  <Step title="Clean up after testing">
+    Remember to stop the replay and disconnect:
+    ```typescript
+    player.play(() => {
+      connector.close();
+    });
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  The replay system uses the same authentication flow as live matches. Make sure your server has `REQUIRE_AUTH_KEY=false` or use a valid access key for replay testing.
+</Note>

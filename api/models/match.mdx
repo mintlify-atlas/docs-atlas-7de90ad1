@@ -1,0 +1,340 @@
+---
+title: 'Match'
+description: 'Core match data model that manages game state, teams, players, and event processing'
+---
+
+## Overview
+
+The `Match` class is the central data model that orchestrates all match-related data, including teams, players, rounds, timeouts, and event processing. Each match instance represents a single game session and manages the lifecycle from match start to completion.
+
+## Match Class
+
+```typescript
+export class Match {
+  // Identification
+  public matchId: string = "";
+  public groupCode: string;
+  public groupSecret: string;
+  public organizationId: string = "";
+  public isRegistered: boolean = false;
+  
+  // Match State
+  public isRunning: boolean = false;
+  public roundNumber: number = 0;
+  public roundPhase: string = "LOBBY";
+  public eventNumber: number = 1;
+  
+  // Teams and Players
+  private teams: Team[] = [];
+  private map: string = "Loading";
+  
+  // Game Configuration
+  private matchType: "bomb" | "swift" | string = "bomb";
+  private switchRound: number = 13;
+  private firstOtRound: number = 25;
+  
+  // Round State
+  private roundTimeoutTime?: number;
+  private wasTimeout: boolean = false;
+  private agentSelectStartTime?: number;
+  
+  // Spike State
+  private spikeState: SpikeStates;
+  private spikeDetonationTime?: number;
+  private attackersWon: boolean = false;
+  
+  // Timeout Management
+  private timeoutState: TimeoutStates;
+  private timeoutEndTimeout: any;
+  private timeoutRemainingLoop: any;
+  private timeoutGracePeriodPassed: boolean = false;
+  
+  // Tools and Configuration
+  private tools: ToolsData;
+  private showAliveKDA: boolean = false;
+  
+  // Replay and Logging
+  private replayLog: ReplayLogging;
+  private hasEnteredOvertime: boolean = false;
+  private orgIsSupporter: boolean = false;
+}
+```
+
+## Properties
+
+<ResponseField name="matchId" type="string">
+  Unique identifier for the match received from the game client.
+</ResponseField>
+
+<ResponseField name="groupCode" type="string">
+  Unique code that identifies the match session for client connections.
+</ResponseField>
+
+<ResponseField name="groupSecret" type="string">
+  12-character alphanumeric secret for secure match access. Auto-generated.
+</ResponseField>
+
+<ResponseField name="isRunning" type="boolean" default="false">
+  Indicates whether the match is currently active.
+</ResponseField>
+
+<ResponseField name="roundNumber" type="number" default="0">
+  Current round number (1-indexed).
+</ResponseField>
+
+<ResponseField name="roundPhase" type="string" default="LOBBY">
+  Current phase of the round.
+  
+  <Expandable title="Round Phases">
+    - `LOBBY`: Waiting for match to start
+    - `shopping`: Buy phase at round start
+    - `combat`: Active round gameplay
+    - `end`: Round has ended
+    - `game_end`: Match has concluded
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="eventNumber" type="number" default="1">
+  Incremental counter for tracking events throughout the match.
+</ResponseField>
+
+<ResponseField name="teams" type="Team[]">
+  Array containing exactly two team instances (left and right).
+</ResponseField>
+
+<ResponseField name="map" type="string" default="Loading">
+  Current map name (translated from internal names).
+</ResponseField>
+
+<ResponseField name="matchType" type="string" default="bomb">
+  Game mode type.
+  
+  <Expandable title="Match Types">
+    - `bomb`: Standard competitive mode (13-round halves, OT at 25)
+    - `swift`: Swiftplay mode (5-round halves)
+  </Expandable>
+</ResponseField>
+
+## Constructor
+
+```typescript
+constructor(data: IAuthenticationData)
+```
+
+Initializes a new match with authentication data from the observer client.
+
+<ResponseField name="data" type="IAuthenticationData" required>
+  Authentication payload containing:
+  
+  <Expandable title="Authentication Data Fields">
+    - `groupCode`: Session identifier
+    - `leftTeam`: Left team configuration
+    - `rightTeam`: Right team configuration
+    - `toolsData`: Tournament and display settings
+    - `organizationId`: Optional organization identifier
+    - `isSupporter`: Whether the organization has Spectra Plus
+  </Expandable>
+</ResponseField>
+
+## Core Methods
+
+### receiveMatchSpecificData
+
+```typescript
+async receiveMatchSpecificData(data: IAuthedData | IAuthedAuxData): Promise<void>
+```
+
+Processes incoming event data from observer and auxiliary clients. This is the primary data ingestion method.
+
+<ResponseField name="data" type="IAuthedData | IAuthedAuxData" required>
+  Authenticated event data with type discriminator.
+  
+  <Expandable title="Handled Event Types">
+    - `SCOREBOARD`: Player stats and equipment updates
+    - `ROSTER`: Agent selection and player info
+    - `KILLFEED`: Kill events and assists
+    - `OBSERVING`: Camera focus changes
+    - `SCORE`: Round score updates
+    - `ROUND_INFO`: Round phase and number changes
+    - `MATCH_START`: Match initialization
+    - `MAP`: Map selection
+    - `GAME_MODE`: Mode configuration
+    - `TECH_PAUSE`: Technical pause toggle
+    - `LEFT_TIMEOUT` / `RIGHT_TIMEOUT`: Team timeout requests
+    - `SPIKE_PLANTED` / `SPIKE_DETONATED` / `SPIKE_DEFUSED`: Spike events
+    - `AUX_*`: Auxiliary data from player clients
+  </Expandable>
+</ResponseField>
+
+**Behavior:**
+- Routes data to appropriate team/player instances
+- Updates match state based on event type
+- Increments `eventNumber` after processing
+- Writes all events to replay log
+- Manages database sync for registered matches
+
+### setAuxDisconnected
+
+```typescript
+public setAuxDisconnected(playerId: string): void
+```
+
+Marks auxiliary data sources as disconnected for a specific player.
+
+## State Interfaces
+
+### SpikeStates
+
+```typescript
+export interface SpikeStates {
+  planted: boolean;
+  detonated: boolean;
+  defused: boolean;
+}
+```
+
+<ResponseField name="planted" type="boolean">
+  Whether the spike has been planted this round.
+</ResponseField>
+
+<ResponseField name="detonated" type="boolean">
+  Whether the spike has detonated.
+</ResponseField>
+
+<ResponseField name="defused" type="boolean">
+  Whether the spike has been defused.
+</ResponseField>
+
+### TimeoutStates
+
+```typescript
+export interface TimeoutStates {
+  techPause: boolean;
+  leftTeam: boolean;
+  rightTeam: boolean;
+  timeRemaining: number;
+}
+```
+
+<ResponseField name="techPause" type="boolean">
+  Whether a technical pause is active (not team-initiated).
+</ResponseField>
+
+<ResponseField name="leftTeam" type="boolean">
+  Whether the left team has an active timeout.
+</ResponseField>
+
+<ResponseField name="rightTeam" type="boolean">
+  Whether the right team has an active timeout.
+</ResponseField>
+
+<ResponseField name="timeRemaining" type="number">
+  Seconds remaining in the current timeout.
+</ResponseField>
+
+## Lifecycle Events
+
+### Match Start
+
+When `MATCH_START` is received:
+1. Sets `isRunning = true`
+2. Stores the match ID
+3. Registers with database (if backend enabled)
+4. Initializes stats tracking (for supporters)
+
+### Round Transitions
+
+On `shopping` phase:
+1. Processes previous round results
+2. Resets spike states
+3. Handles side switches (round 13 and OT rounds)
+4. Grants overtime timeouts
+5. Updates database
+
+### Match End
+
+When `game_end` is received:
+1. Sets `isRunning = false`
+2. Clears timeout timers
+3. Removes match from controller
+4. Completes database record
+5. Triggers stats processing (for supporters)
+
+## Example Usage
+
+```typescript
+// Match is created on authentication
+const authData: IAuthenticationData = {
+  type: DataTypes.AUTH,
+  clientVersion: "1.0.0",
+  obsName: "Observer1",
+  key: "auth-key",
+  groupCode: "ABC123",
+  leftTeam: {
+    name: "Team Alpha",
+    tricode: "ALP",
+    url: "https://example.com/alpha.png",
+    attackStart: true
+  },
+  rightTeam: {
+    name: "Team Beta",
+    tricode: "BTA",
+    url: "https://example.com/beta.png",
+    attackStart: false
+  },
+  toolsData: new ToolsData()
+};
+
+const match = new Match(authData);
+
+// Process incoming events
+await match.receiveMatchSpecificData({
+  obsName: "Observer1",
+  groupCode: "ABC123",
+  type: DataTypes.MATCH_START,
+  timestamp: Date.now(),
+  data: "match-uuid-12345"
+});
+
+await match.receiveMatchSpecificData({
+  obsName: "Observer1",
+  groupCode: "ABC123",
+  type: DataTypes.ROUND_INFO,
+  timestamp: Date.now(),
+  data: {
+    roundNumber: 1,
+    roundPhase: "shopping"
+  }
+});
+```
+
+## Internal Mechanisms
+
+<Expandable title="Spike Plant Detection">
+  The match automatically detects spike plants by monitoring player money increases:
+  - If a player receives exactly 300 credits during combat phase
+  - Sets spike planted state and starts 45-second detonation timer
+  - Can also receive explicit `SPIKE_PLANTED` events from hotkeys
+</Expandable>
+
+<Expandable title="Round Reason Tracking">
+  After each round, the match determines win conditions:
+  - Attackers won by detonation or elimination
+  - Defenders won by defusal, timeout, or elimination
+  - Stores results in team round records
+</Expandable>
+
+<Expandable title="Timeout Management">
+  Timeouts include grace period cancellation:
+  - Teams start with 2 timeouts (max configurable)
+  - Timeouts last 60 seconds by default
+  - 10-second grace period allows free cancellation
+  - Teams gain +1 timeout when entering overtime (round 25)
+</Expandable>
+
+<Expandable title="Name Overrides & Playercams">
+  For organizations with playercam integration:
+  - Fetches overrides and enabled players from database
+  - Updates at round start
+  - Requires identifier and secret from `playercamsInfo`
+</Expandable>

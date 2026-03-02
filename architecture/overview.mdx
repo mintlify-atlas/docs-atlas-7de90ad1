@@ -1,0 +1,164 @@
+---
+title: Architecture Overview
+description: High-level architecture of the Spectra Server and its role in the Spectra ecosystem
+---
+
+## Introduction
+
+Spectra Server is the central hub of the Spectra ecosystem, acting as a real-time data broker between VALORANT observer clients and broadcast frontends. It orchestrates game state, manages match lifecycles, and provides auxiliary services for production overlays.
+
+## The Spectra Ecosystem
+
+The Spectra system consists of three interconnected components:
+
+<Steps>
+  <Step title="Observer Client">
+    Runs on the observer's machine, capturing live game data from VALORANT and sending it to the server for processing.
+  </Step>
+  <Step title="Spectra Server">
+    Central orchestration layer that receives, processes, and broadcasts game state to multiple frontends simultaneously.
+  </Step>
+  <Step title="Broadcast Frontend">
+    Web-based overlays that connect to the server to display real-time game information for viewers.
+  </Step>
+</Steps>
+
+## Server Responsibilities
+
+Spectra Server handles multiple critical functions:
+
+### Data Ingestion & Processing
+- Receives game state from observer clients via WebSocket connections
+- Authenticates clients using access keys
+- Validates client versions for compatibility
+- Processes and normalizes game events
+
+### Match Orchestration
+- Creates and manages match instances with unique group codes
+- Tracks match lifecycle from agent select to game end
+- Manages round state, spike events, and timeouts
+- Automatic cleanup of inactive matches (30-minute timeout)
+
+### Data Broadcasting
+- Maintains WebSocket connections to multiple frontends
+- Broadcasts processed game state in real-time
+- Filters sensitive data before transmission
+- Supports room-based broadcasting by group code
+
+### Backend Integration
+- Validates access keys against the backend API
+- Registers matches and updates match state
+- Fetches name overrides and playercam configurations
+- Statistics tracking for supporter organizations
+
+## Port Architecture
+
+Spectra Server operates on three distinct ports, each serving a specific purpose:
+
+<CardGroup cols={3}>
+  <Card title="Port 5100" icon="arrow-down">
+    **Ingestion Port**
+    
+    Receives data from observer clients and auxiliary clients. Handles authentication and game state ingestion.
+  </Card>
+  <Card title="Port 5101" icon="server">
+    **REST API Port**
+    
+    Provides HTTP endpoints for status checks, preview creation, and metadata queries.
+  </Card>
+  <Card title="Port 5200" icon="arrow-up">
+    **Broadcast Port**
+    
+    Sends processed game state to connected frontends. Supports multiple concurrent viewers per match.
+  </Card>
+</CardGroup>
+
+## Authentication Flow
+
+The server implements a multi-step authentication process to ensure security:
+
+<Steps>
+  <Step title="Client Connection">
+    Observer client establishes WebSocket connection to port 5100
+  </Step>
+  <Step title="Authentication Request">
+    Client sends `obs_logon` event with credentials:
+    - Access key
+    - Group code
+    - Observer name
+    - Team information
+    - Client version
+  </Step>
+  <Step title="Validation">
+    Server performs validation:
+    - Checks client version compatibility
+    - Validates access key (local or backend)
+    - Verifies group code availability
+  </Step>
+  <Step title="Match Creation">
+    If valid, server creates match instance and returns:
+    - Group secret (for reconnection)
+    - Authentication acknowledgment
+  </Step>
+  <Step title="Data Flow Begins">
+    Client begins sending game data via `obs_data` events
+  </Step>
+</Steps>
+
+<Info>
+The server supports two authentication modes:
+- **Backend mode** (`USE_BACKEND=true`): Validates keys against the Spectra backend API
+- **Standalone mode**: Uses a single `AUTH_KEY` from environment variables
+</Info>
+
+## Technology Stack
+
+Spectra Server is built on modern, performant technologies:
+
+### Core Framework
+- **Node.js** with **TypeScript** for type safety
+- **Express.js** for REST API endpoints (port 5101)
+- **Socket.IO** for WebSocket connections (ports 5100, 5200)
+
+### Key Libraries
+- **body-parser** for JSON request parsing
+- **cors** for cross-origin resource sharing
+- **dotenv** for environment configuration
+
+### Transport Features
+- **TLS/SSL support** for secure connections
+- **Message compression** via perMessageDeflate
+- **Room-based broadcasting** for efficient multi-client support
+
+<Note>
+The server can run in both secure (HTTPS/WSS) and insecure (HTTP/WS) modes. Production deployments should use TLS by providing `SERVER_KEY` and `SERVER_CERT` paths.
+</Note>
+
+## Security Considerations
+
+### Access Control
+- Access keys validated before match creation
+- Supporter status checked for premium features
+- Group secrets prevent unauthorized reconnection
+
+### Data Filtering
+- Sensitive fields removed before broadcasting:
+  - `replayLog` (internal event log)
+  - `groupSecret` (reconnection token)
+  - `playercamUrl` secrets
+  - Timeout internal timers
+
+### Version Management
+- Client version compatibility checks prevent protocol mismatches
+- Incompatible clients rejected with clear error messages
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Data Flow" icon="diagram-project" href="/architecture/data-flow">
+    Learn how data flows through the system from client to frontend
+  </Card>
+  <Card title="System Components" icon="cubes" href="/architecture/system-components">
+    Deep dive into each major component and its implementation
+  </Card>
+</CardGroup>

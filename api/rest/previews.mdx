@@ -1,0 +1,300 @@
+---
+title: Preview Endpoints
+description: Create and retrieve match preview data with temporary access codes
+---
+
+## Overview
+
+Preview endpoints allow you to create temporary match data snapshots with a 6-character access code. Previews expire automatically after 10 minutes.
+
+## Create Preview
+
+### PUT /createPreview
+
+Creates a new match preview and returns a unique preview code.
+
+#### Request Body
+
+<ParamField body="type" type="string" required>
+  Must be `"preview"`
+</ParamField>
+
+<ParamField body="clientVersion" type="string" required>
+  Version of the client creating the preview
+</ParamField>
+
+<ParamField body="key" type="string" required>
+  Valid API key for authentication. Cannot be null or missing.
+</ParamField>
+
+<ParamField body="previewCode" type="string">
+  Optional custom 6-character preview code. If not provided or invalid, a random code will be generated.
+</ParamField>
+
+<ParamField body="leftTeam" type="object" required>
+  Left team information
+  
+  <ParamField body="leftTeam.name" type="string" required>
+    Team name
+  </ParamField>
+  
+  <ParamField body="leftTeam.tricode" type="string" required>
+    Team tricode (e.g., "SEN", "FNC")
+  </ParamField>
+  
+  <ParamField body="leftTeam.url" type="string" required>
+    Team logo URL
+  </ParamField>
+  
+  <ParamField body="leftTeam.attackStart" type="boolean" required>
+    Whether team starts on attack side
+  </ParamField>
+</ParamField>
+
+<ParamField body="rightTeam" type="object" required>
+  Right team information (same structure as leftTeam)
+</ParamField>
+
+<ParamField body="toolsData" type="object" required>
+  Additional tools configuration data
+</ParamField>
+
+#### Response
+
+<ResponseField name="previewCode" type="string" required>
+  The 6-character preview code (uppercase letters and digits, excluding I and O)
+</ResponseField>
+
+#### Status Codes
+
+- `200` - Preview created successfully
+- `400` - Missing or invalid key in preview data
+- `403` - Invalid or expired API key
+
+#### Error Responses
+
+```json
+{
+  "error": "Missing or invalid key in preview data"
+}
+```
+
+```json
+{
+  "error": "Invalid or expired key"
+}
+```
+
+```json
+{
+  "error": "Invalid preview data",
+  "details": "Detailed error message"
+}
+```
+
+#### Implementation
+
+From `src/index.ts:27-29`:
+
+```typescript
+app.put("/createPreview", async (req: Request, res: Response) => {
+  await previewHandler.handlePreviewCreation(req, res);
+});
+```
+
+Preview creation logic from `src/util/previews/PreviewHandler.ts:23-67`:
+
+```typescript
+public async handlePreviewCreation(req: Request, res: Response) {
+  try {
+    const previewData: IPreviewData = req.body;
+    if (!previewData.key || previewData.key == null) {
+      return res.status(400).json({ error: "Missing or invalid key in preview data" });
+    }
+
+    const validity: KeyValidity = await this.wsi.isValidKey(previewData.key);
+    if (!validity.valid) {
+      return res.status(403).json({ error: "Invalid or expired key" });
+    }
+    previewData.organizationId = validity.organizationId;
+
+    let previewCode: string = previewData.previewCode;
+    if (!previewCode || previewCode.length !== 6) {
+      for (let i = 0; i < 6; i++) {
+        previewCode += validGroupcodeCharacters.charAt(
+          Math.floor(Math.random() * validGroupcodeCharacters.length),
+        );
+      }
+    }
+
+    const previewMatch = new PreviewMatch(previewData);
+    this.previews.set(previewCode, previewMatch);
+    res.status(200).json({ previewCode: previewCode });
+
+    // Set a timeout to remove the preview after 10 minutes
+    const timeout = setTimeout(
+      () => {
+        this.previews.delete(previewCode);
+        this.previewTimeouts.delete(previewCode);
+      },
+      10 * 60 * 1000,
+    );
+    this.previewTimeouts.set(previewCode, timeout);
+
+    return res;
+  } catch (e: any) {
+    return res.status(400).json({ error: "Invalid preview data", details: e.message });
+  }
+}
+```
+
+#### Example Request
+
+```bash cURL
+curl -X PUT http://localhost:5101/createPreview \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "preview",
+    "clientVersion": "1.0.0",
+    "key": "your-api-key",
+    "leftTeam": {
+      "name": "Team Liquid",
+      "tricode": "TL",
+      "url": "https://example.com/tl-logo.png",
+      "attackStart": true
+    },
+    "rightTeam": {
+      "name": "Fnatic",
+      "tricode": "FNC",
+      "url": "https://example.com/fnc-logo.png",
+      "attackStart": false
+    },
+    "toolsData": {}
+  }'
+```
+
+#### Example Response
+
+```json
+{
+  "previewCode": "A3K9ZX"
+}
+```
+
+---
+
+## Get Preview
+
+### GET /preview/:previewCode
+
+Retrieves match preview data using the preview code.
+
+#### Path Parameters
+
+<ParamField path="previewCode" type="string" required>
+  The 6-character preview code. Must be exactly 6 characters.
+</ParamField>
+
+#### Response
+
+Returns the complete preview match object with all match data.
+
+#### Status Codes
+
+- `200` - Preview found and returned
+- `400` - Invalid preview code format
+- `404` - Preview not found or expired
+
+#### Error Responses
+
+```json
+{
+  "error": "Invalid preview code format"
+}
+```
+
+```json
+{
+  "error": "Preview not found"
+}
+```
+
+#### Implementation
+
+From `src/index.ts:31-42`:
+
+```typescript
+app.get("/preview/:previewCode", async (req: Request, res: Response) => {
+  const previewCode = req.params.previewCode;
+  Log.info(`Received request for preview with code: ${previewCode}`);
+  if (!previewCode || previewCode.length !== 6) {
+    return res.status(400).json({ error: "Invalid preview code format" });
+  }
+  const previewMatch = previewHandler.getPreview(previewCode);
+  if (!previewMatch) {
+    return res.status(404).json({ error: "Preview not found" });
+  }
+  res.status(200).json(previewMatch);
+});
+```
+
+#### Example Requests
+
+<CodeGroup>
+
+```bash cURL
+curl http://localhost:5101/preview/A3K9ZX
+```
+
+```javascript JavaScript
+fetch('http://localhost:5101/preview/A3K9ZX')
+  .then(res => res.json())
+  .then(data => console.log('Preview data:', data));
+```
+
+```python Python
+import requests
+
+response = requests.get('http://localhost:5101/preview/A3K9ZX')
+if response.status_code == 200:
+    preview_data = response.json()
+    print('Preview data:', preview_data)
+else:
+    print('Error:', response.json()['error'])
+```
+
+</CodeGroup>
+
+---
+
+## Preview Code Format
+
+Preview codes are 6-character strings using uppercase letters and digits, **excluding I and O** to avoid confusion:
+
+```typescript
+const validGroupcodeCharacters = "ABCDEFGHJKLMNPQRSTUVWXYZ0123456789";
+```
+
+Valid examples: `A3K9ZX`, `HRST23`, `9PQWER`
+
+Invalid examples: `abc123` (lowercase), `IOTEST` (contains I and O), `A3K9` (too short)
+
+## Preview Expiration
+
+Previews automatically expire after **10 minutes** (600,000 milliseconds):
+
+```typescript
+setTimeout(
+  () => {
+    this.previews.delete(previewCode);
+    this.previewTimeouts.delete(previewCode);
+  },
+  10 * 60 * 1000,
+);
+```
+
+From `src/util/previews/PreviewHandler.ts:54-61`
+
+<Note>
+If a preview code is reused before expiration, the old timeout is cleared and a new 10-minute timer starts.
+</Note>

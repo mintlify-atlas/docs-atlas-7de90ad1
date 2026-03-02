@@ -1,0 +1,206 @@
+---
+title: Organization Endpoint
+description: Verify API keys and retrieve organization information
+---
+
+## GET /getOrgForKey
+
+Verifies an API key and returns the associated organization information. This endpoint requires backend integration to be enabled.
+
+### Authentication
+
+Requires a valid API key passed as a query parameter.
+
+### Query Parameters
+
+<ParamField query="key" type="string" required>
+  The API key to verify. Must be a valid string.
+</ParamField>
+
+### Response
+
+<ResponseField name="id" type="string" required>
+  The organization's unique identifier
+</ResponseField>
+
+<ResponseField name="name" type="string" required>
+  The organization's name
+</ResponseField>
+
+<ResponseField name="isSupporter" type="boolean" required>
+  Whether the organization has supporter status
+</ResponseField>
+
+### Status Codes
+
+- `200` - Key is valid, organization information returned
+- `400` - Key parameter is missing or invalid
+- `401` - Key is invalid or unauthorized
+
+### Error Responses
+
+```json
+{
+  "error": "Key is required"
+}
+```
+
+```
+401 Unauthorized
+```
+
+### Backend Requirement
+
+This endpoint only functions when backend integration is enabled:
+
+```env
+USE_BACKEND=true
+```
+
+<Warning>
+If `USE_BACKEND` is not set to `"true"`, this endpoint will always return `401 Unauthorized`, even for valid keys.
+</Warning>
+
+### Implementation
+
+From `src/index.ts:44-64`:
+
+```typescript
+app.get("/getOrgForKey", async (req, res) => {
+  const key = req.query.key;
+  if (!key || typeof key !== "string") {
+    res.status(400).header("Access-Control-Allow-Origin", "*").json({ error: "Key is required" });
+    return;
+  }
+
+  if (process.env.USE_BACKEND === "true") {
+    const validity = await DatabaseConnector.verifyAccessKey(key);
+    if (validity.valid) {
+      res.status(200).header("Access-Control-Allow-Origin", "*").json({
+        id: validity.organizationId,
+        name: validity.organizationName,
+        isSupporter: validity.isSupporter,
+      });
+      return;
+    }
+  }
+
+  res.status(401).header("Access-Control-Allow-Origin", "*").send("401 Unauthorized");
+});
+```
+
+### Key Verification
+
+The key is verified against the backend database using `DatabaseConnector.verifyAccessKey()`, which returns:
+
+```typescript
+interface KeyValidity {
+  valid: boolean;
+  organizationId?: string;
+  organizationName?: string;
+  isSupporter?: boolean;
+}
+```
+
+### Example Requests
+
+<CodeGroup>
+
+```bash cURL
+curl "http://localhost:5101/getOrgForKey?key=your-api-key"
+```
+
+```javascript JavaScript
+const apiKey = 'your-api-key';
+
+fetch(`http://localhost:5101/getOrgForKey?key=${apiKey}`)
+  .then(res => {
+    if (res.status === 401) {
+      throw new Error('Invalid API key');
+    }
+    return res.json();
+  })
+  .then(org => {
+    console.log('Organization:', org.name);
+    console.log('Supporter:', org.isSupporter);
+  })
+  .catch(err => console.error(err));
+```
+
+```python Python
+import requests
+
+api_key = 'your-api-key'
+response = requests.get(
+    'http://localhost:5101/getOrgForKey',
+    params={'key': api_key}
+)
+
+if response.status_code == 200:
+    org = response.json()
+    print(f"Organization: {org['name']}")
+    print(f"ID: {org['id']}")
+    print(f"Supporter: {org['isSupporter']}")
+elif response.status_code == 401:
+    print('Invalid API key')
+else:
+    print('Error:', response.json()['error'])
+```
+
+</CodeGroup>
+
+### Example Response
+
+```json
+{
+  "id": "org_abc123",
+  "name": "Acme Esports",
+  "isSupporter": true
+}
+```
+
+### Use Cases
+
+#### API Key Validation
+
+Verify a key before allowing access to other services:
+
+```bash
+curl -s "http://localhost:5101/getOrgForKey?key=$API_KEY" | jq '.isSupporter'
+```
+
+#### Organization Lookup
+
+Retrieve organization details for display or logging:
+
+```javascript
+async function getOrganization(apiKey) {
+  const response = await fetch(
+    `http://localhost:5101/getOrgForKey?key=${apiKey}`
+  );
+  
+  if (!response.ok) {
+    throw new Error('Invalid API key');
+  }
+  
+  return await response.json();
+}
+```
+
+#### Supporter Features
+
+Check if an organization has supporter status:
+
+```javascript
+const org = await getOrganization(apiKey);
+if (org.isSupporter) {
+  // Enable supporter-only features
+}
+```
+
+### Notes
+
+- Keys are validated in real-time against the backend database
+- Invalid keys immediately return `401 Unauthorized`
+- CORS headers are included for browser-based requests
+- The endpoint requires backend integration via `USE_BACKEND=true`

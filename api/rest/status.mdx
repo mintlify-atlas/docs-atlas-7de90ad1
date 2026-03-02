@@ -1,0 +1,118 @@
+---
+title: Status Endpoint
+description: Server health check and match count monitoring
+---
+
+## GET /status
+
+Returns the current server status and the number of active matches. This endpoint is useful for health checks and monitoring.
+
+### Endpoint
+
+```
+GET /status
+```
+
+### Authentication
+
+No authentication required. This is a public endpoint.
+
+### Response
+
+<ResponseField name="status" type="string" required>
+  Server status. Returns `"UP"` when the server is running.
+</ResponseField>
+
+<ResponseField name="matchesRunning" type="number" required>
+  The number of currently active matches on the server.
+</ResponseField>
+
+### Response Example
+
+```json
+{
+  "status": "UP",
+  "matchesRunning": 3
+}
+```
+
+### Status Codes
+
+- `200` - Success
+
+### Implementation
+
+From `src/index.ts:22-25`:
+
+```typescript
+app.get("/status", (req: Request, res: Response) => {
+  const status = { 
+    status: "UP", 
+    matchesRunning: MatchController.getInstance().getMatchCount() 
+  };
+  res.header("Access-Control-Allow-Origin", "*").json(status);
+});
+```
+
+The `matchesRunning` count is retrieved from the `MatchController` which tracks all active match sessions.
+
+### Use Cases
+
+#### Health Monitoring
+
+Use this endpoint in your monitoring system to verify server availability:
+
+```bash
+curl http://localhost:5101/status
+```
+
+#### Load Balancing
+
+Check match count before routing new connections:
+
+```bash
+curl -s http://localhost:5101/status | jq '.matchesRunning'
+```
+
+#### Docker Health Check
+
+Add to your `docker-compose.yml`:
+
+```yaml
+healthcheck:
+  test: ["CMD", "curl", "-f", "http://localhost:5101/status"]
+  interval: 30s
+  timeout: 10s
+  retries: 3
+```
+
+### Example Requests
+
+<CodeGroup>
+
+```bash cURL
+curl http://localhost:5101/status
+```
+
+```javascript JavaScript
+fetch('http://localhost:5101/status')
+  .then(res => res.json())
+  .then(data => console.log(`Server ${data.status}, ${data.matchesRunning} matches running`));
+```
+
+```python Python
+import requests
+
+response = requests.get('http://localhost:5101/status')
+data = response.json()
+print(f"Server {data['status']}, {data['matchesRunning']} matches running")
+```
+
+</CodeGroup>
+
+### Notes
+
+- This endpoint always returns `200 OK` when the server is running
+- The `matchesRunning` counter is updated in real-time
+- Matches are automatically removed after 30 minutes of inactivity
+- CORS headers are included for browser-based requests

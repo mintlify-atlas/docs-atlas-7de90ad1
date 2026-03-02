@@ -1,0 +1,322 @@
+---
+title: "Incoming WebSocket Connection"
+description: "Port 5100 WebSocket server for observer and auxiliary client connections"
+---
+
+## Overview
+
+The incoming WebSocket server on **port 5100** accepts connections from:
+
+- **Observer clients**: Send match data from VALORANT observer mode
+- **Auxiliary clients**: Send player-specific data (abilities, health, POV scoreboard)
+
+All clients must authenticate before sending game data.
+
+## Server Initialization
+
+The server is created in `src/connector/websocketIncoming.ts:24-57`:
+
+```typescript
+let serverInstance;
+
+if (process.env.INSECURE == "true") {
+  serverInstance = createInsecureServer();
+} else {
+  if (!process.env.SERVER_KEY || !process.env.SERVER_CERT) {
+    Log.error(
+      `Missing TLS key or certificate! Please provide the paths to the key and certificate in the .env file. (SERVER_KEY and SERVER_CERT)`,
+    );
+  }
+
+  const options = {
+    key: readFileSync(process.env.SERVER_KEY!),
+    cert: readFileSync(process.env.SERVER_CERT!),
+  };
+
+  serverInstance = createServer(options);
+}
+
+this.wss = new Server(serverInstance, {
+  perMessageDeflate: {
+    zlibDeflateOptions: {
+      chunkSize: 1024,
+      memLevel: 7,
+      level: 3,
+    },
+    zlibInflateOptions: {
+      chunkSize: 10 * 1024,
+    },
+    threshold: 1024,
+  },
+  cors: { origin: "*" },
+});
+
+serverInstance.listen(5100);
+```
+
+<Note>
+The server automatically enables perMessageDeflate compression for all WebSocket messages over 1KB.
+</Note>
+
+## Connection Flow
+
+When a client connects to port 5100, the server creates a `ClientUser` object and registers event listeners.
+
+### Initial Connection
+
+From `websocketIncoming.ts:59-64`:
+
+```typescript
+this.wss.on(`connection`, (ws) => {
+  const user = new ClientUser("New User", "Unknown Team", ws);
+
+  ws.on("error", () => {
+    Log.error(`${user.name} encountered a Websocket error.`);
+  });
+
+  // Authentication listeners registered here
+});
+```
+
+### ClientUser Class
+
+Each connection is represented by a `ClientUser` object (`websocketIncoming.ts:298-310`):
+
+```typescript
+class ClientUser {
+  name: string;
+  groupCode: string;
+  isAuxiliary: boolean = false;
+  playerId: string = "";
+  ws: Socket;
+
+  constructor(name: string, groupCode: string, ws: Socket) {
+    this.name = name;
+    this.groupCode = groupCode;
+    this.ws = ws;
+  }
+}
+```
+
+## Event Listeners
+
+The server registers five main event listeners on each connection:
+
+### 1. obs_logon (Observer Authentication)
+
+Registered once per connection (`websocketIncoming.ts:66-156`):
+
+```typescript
+ws.once("obs_logon", async (msg) => {
+  const authenticationData: IAuthenticationData = JSON.parse(msg.toString());
+
+  // Validation and authentication logic
+  // See Authentication page for details
+
+  // On success:
+  ws.emit(
+    "obs_logon_ack",
+    JSON.stringify({ type: DataTypes.AUTH, value: true, reason: groupSecret }),
+  );
+  user.name = authenticationData.obsName;
+  user.groupCode = authenticationData.groupCode;
+  WebsocketIncoming.authedClients.push(user);
+
+  this.onAuthSuccess(user);
+});
+```
+
+See the [Authentication page](./authentication) for complete `obs_logon` flow.
+
+### 2. aux_logon (Auxiliary Authentication)
+
+Registered once per connection (`websocketIncoming.ts:158-227`):
+
+```typescript
+ws.once("aux_logon", async (msg) => {
+  const authenticationData: IAuxAuthenticationData = JSON.parse(msg.toString());
+
+  // Validation logic
+  // See Authentication page for details
+
+  // On success:
+  ws.emit("aux_logon_ack", JSON.stringify({ type: DataTypes.AUX_AUTH, value: true }));
+  user.name = authenticationData.name;
+  user.groupCode = groupCode;
+  user.isAuxiliary = true;
+  user.playerId = authenticationData.playerId;
+  WebsocketIncoming.authedClients.push(user);
+
+  this.onAuthSuccess(user);
+});
+```
+
+See the [Authentication page](./authentication) for complete `aux_logon` flow.
+
+### 3. obs_data (Observer Game Data)
+
+Registered after successful authentication (`websocketIncoming.ts:249-258`):
+
+```typescript
+user.ws.on("obs_data", async (msg: any) => {
+  try {
+    const data = JSON.parse(msg.toString());
+    if (isAuthedData(data)) {
+      await this.matchController.receiveMatchData(data);
+    }
+  } catch (e) {
+    Log.error(`Error parsing obs_data: ${e}`);
+  }
+});
+```
+
+<Note>
+`obs_data` events are only accepted after successful `obs_logon` authentication. The `isAuthedData` type guard validates the data structure.
+</Note>
+
+### 4. aux_data (Auxiliary Game Data)
+
+Registered after successful authentication (`websocketIncoming.ts:260-272`):
+
+```typescript
+user.ws.on("aux_data", async (msg: any) => {
+  try {
+    const data = JSON.parse(msg.toString());
+    if (isAuthedData(data)) {
+      await this.matchController.receiveMatchData(data);
+      if (data.type === DataTypes.AUX_SCOREBOARD && user.playerId === "") {
+        user.playerId = (data as IAuthedAuxData).playerId;
+      }
+    }
+  } catch (e) {
+    Log.error(`Error parsing aux_data: ${e}`);
+  }
+});
+```
+
+The server automatically extracts `playerId` from the first `AUX_SCOREBOARD` event if not provided during authentication.
+
+### 5. disconnect
+
+Registered for all connections (`websocketIncoming.ts:229-241`):
+
+```typescript
+ws.on("disconnect", () => {
+  const index = WebsocketIncoming.authedClients.findIndex((client) => client.ws.id === ws.id);
+  if (index != -1) {
+    const client = WebsocketIncoming.authedClients[index];
+    if (client.playerId !== "") {
+      Log.info(`Auxiliary player ${client.playerId} disconnected.`);
+      this.matchController.setAuxDisconnected(client.groupCode, client.playerId);
+    }
+    if (client.isAuxiliary) {
+      WebsocketIncoming.authedClients.splice(index, 1);
+    }
+  }
+});
+```
+
+<Note>
+Auxiliary clients are immediately removed from the authenticated clients list on disconnect. Observer clients remain in the list but their match is marked as ended.
+</Note>
+
+## Authentication Required
+
+Clients **must** emit either `obs_logon` or `aux_logon` before sending data:
+
+1. Connect to `wss://server:5100`
+2. Emit `obs_logon` or `aux_logon` with authentication payload
+3. Wait for `obs_logon_ack` or `aux_logon_ack` response
+4. If `value: true`, client is authenticated and can send data
+5. Emit `obs_data` or `aux_data` events with game state
+
+## Static Authenticated Clients
+
+The server maintains a static list of authenticated clients:
+
+```typescript
+static authedClients: ClientUser[] = [];
+```
+
+This list is used to:
+
+- Prevent duplicate authentications from the same socket
+- Track which clients are connected to which matches
+- Disconnect all clients for a specific `groupCode`
+
+### Disconnecting by Group Code
+
+```typescript
+public static disconnectGroupCode(groupCode: string) {
+  for (const client of WebsocketIncoming.authedClients) {
+    if (client.groupCode === groupCode) {
+      client.ws.disconnect();
+    }
+  }
+}
+```
+
+## Error Handling
+
+All event listeners wrap JSON parsing in try-catch blocks:
+
+```typescript
+try {
+  const data = JSON.parse(msg.toString());
+  // Process data
+} catch (e) {
+  Log.error(`Error parsing: ${e}`);
+}
+```
+
+Invalid JSON or malformed data is logged but does not disconnect the client.
+
+## Connection Example
+
+```typescript
+import { io } from "socket.io-client";
+
+const socket = io("wss://server:5100");
+
+socket.on("connect", () => {
+  // Send observer authentication
+  socket.emit("obs_logon", JSON.stringify({
+    type: "authenticate",
+    clientVersion: "1.0.0",
+    obsName: "Observer 1",
+    key: "your-api-key",
+    groupCode: "MATCH123",
+    leftTeam: { name: "Team A", tricode: "TMA", url: "", attackStart: true },
+    rightTeam: { name: "Team B", tricode: "TMB", url: "", attackStart: false },
+    toolsData: { /* ... */ }
+  }));
+});
+
+socket.on("obs_logon_ack", (msg) => {
+  const response = JSON.parse(msg);
+  if (response.value) {
+    console.log("Authenticated! Group secret:", response.reason);
+    // Now send game data
+    socket.emit("obs_data", JSON.stringify({
+      obsName: "Observer 1",
+      groupCode: "MATCH123",
+      type: "scoreboard",
+      timestamp: Date.now(),
+      data: { /* scoreboard data */ }
+    }));
+  } else {
+    console.error("Auth failed:", response.reason);
+  }
+});
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Authentication" icon="key" href="./authentication">
+    Complete authentication flow and validation
+  </Card>
+  <Card title="Data Events" icon="table" href="./data-events">
+    Event types and data schemas
+  </Card>
+</CardGroup>

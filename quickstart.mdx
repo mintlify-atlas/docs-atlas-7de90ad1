@@ -1,80 +1,303 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get Spectra Server running in minutes with Docker Compose
 ---
 
-## Get started in three steps
+# Quickstart Guide
 
-Get your documentation site running locally and make your first customization.
+Get Spectra Server up and running in less than 5 minutes using Docker Compose. This guide will have you processing game data and streaming to frontends quickly.
 
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
+## Prerequisites
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Docker" icon="docker">
+    Docker Engine 20.10 or higher
+  </Card>
+  <Card title="Docker Compose" icon="layer-group">
+    Docker Compose v2.0 or higher
+  </Card>
 </CardGroup>
 
+<Info>
+  No Node.js installation required when using Docker! The container includes all dependencies.
+</Info>
+
+## Quick Setup with Docker Compose
+
+<Steps>
+  <Step title="Create Project Directory">
+    Create a dedicated directory for Spectra Server and SSL certificates:
+
+    ```bash
+    mkdir -p spectra-server/keys
+    cd spectra-server
+    ```
+
+    The `keys` folder will store SSL certificates (optional for development).
+  </Step>
+
+  <Step title="Create Docker Compose Configuration">
+    Create a `docker-compose.yml` file in the `spectra-server` directory:
+
+    ```yaml docker-compose.yml
+    ---
+    services:
+      valo-spectra-server:
+        image: "ghcr.io/valospectra/server"
+        ports:
+          - "5100:5100"  # Incoming WebSocket (observer clients)
+          - "5101:5101"  # REST API
+          - "5200:5200"  # Outgoing WebSocket (frontends)
+        volumes:
+          - ./keys:/app/keys
+        environment:
+          - INSECURE=true  # Set to false for production with SSL
+    ```
+
+    <Note>
+      **Port Mapping:**
+      - **5100**: Incoming WebSocket for observer clients
+      - **5101**: REST API for status, previews, and team info
+      - **5200**: Outgoing WebSocket for frontends
+    </Note>
+  </Step>
+
+  <Step title="Configure Environment Variables (Optional)">
+    For development, the default `INSECURE=true` setting is sufficient. For production or custom configurations, create a `.env` file:
+
+    <CodeGroup>
+      ```bash Development (.env)
+      # Development mode (no SSL required)
+      INSECURE=true
+      REQUIRE_AUTH_KEY=false
+      ```
+
+      ```bash Production (.env)
+      # Production mode (SSL required)
+      SERVER_KEY=keys/server.key
+      SERVER_CERT=keys/server.crt
+      INSECURE=false
+
+      # Authentication
+      REQUIRE_AUTH_KEY=true
+      AUTH_KEY=your-secret-key-here
+
+      # Optional: Backend integration
+      # USE_BACKEND=true
+      # SUPPORTER_CHECK_URL=https://your-backend.com/endpoint
+      ```
+    </CodeGroup>
+
+    Then update your `docker-compose.yml` to use the env file:
+
+    ```yaml docker-compose.yml
+    services:
+      valo-spectra-server:
+        image: "ghcr.io/valospectra/server"
+        ports:
+          - "5100:5100"
+          - "5101:5101"
+          - "5200:5200"
+        volumes:
+          - ./keys:/app/keys
+        env_file:
+          - .env
+    ```
+
+    <Warning>
+      For production deployments, always set `INSECURE=false` and provide valid SSL certificates in the `keys` folder. Self-signed certificates will be auto-generated if not provided.
+    </Warning>
+  </Step>
+
+  <Step title="Start the Server">
+    Launch Spectra Server with Docker Compose:
+
+    ```bash
+    docker compose up -d
+    ```
+
+    The `-d` flag runs the container in detached mode (background).
+
+    <Tip>
+      To view logs in real-time: `docker compose logs -f valo-spectra-server`
+    </Tip>
+  </Step>
+
+  <Step title="Verify Server is Running">
+    Check the server status using the REST API:
+
+    ```bash
+    curl http://localhost:5101/status
+    ```
+
+    You should receive a response like:
+
+    ```json
+    {
+      "status": "UP",
+      "matchesRunning": 0
+    }
+    ```
+
+    <Info>
+      The `matchesRunning` field shows the number of active matches currently being tracked by the server.
+    </Info>
+  </Step>
+</Steps>
+
+## SSL Certificates (Production)
+
+For production deployments with `INSECURE=false`, place your SSL certificates in the `keys` folder:
+
+```bash
+spectra-server/
+├── docker-compose.yml
+├── .env
+└── keys/
+    ├── server.key
+    └── server.crt
+```
+
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  If you don't provide SSL certificates, Spectra Server will automatically generate self-signed certificates. However, clients will need to accept the self-signed certificate.
+</Note>
+
+## Environment Variables Reference
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `INSECURE` | `true` | Set to `false` to enable HTTPS/WSS with SSL certificates |
+| `SERVER_KEY` | `keys/server.key` | Path to SSL private key |
+| `SERVER_CERT` | `keys/server.crt` | Path to SSL certificate |
+| `REQUIRE_AUTH_KEY` | `true` | Require API key authentication for observer clients |
+| `AUTH_KEY` | `DEBUG_REMOVE_ME` | Master authentication key for development |
+| `USE_BACKEND` | `false` | Enable backend integration for multi-org support |
+| `SUPPORTER_CHECK_URL` | - | Backend endpoint for supporter verification |
+
+<Warning>
+  Never commit your `.env` file or production `AUTH_KEY` to version control!
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Connect Observer Client" icon="gamepad" href="https://github.com/ValoSpectra/Spectra-Client">
+    Set up Spectra Client on an observer machine
+  </Card>
+  <Card title="Connect Frontend" icon="tv" href="https://github.com/ValoSpectra/Spectra-Frontend">
+    Configure Spectra Frontend to receive game state
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/rest/overview">
+    Explore REST endpoints and WebSocket events
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/deployment/configuration">
+    Advanced configuration and authentication setup
+  </Card>
+</CardGroup>
+
+## Testing the Connection
+
+Once the server is running, you can test WebSocket connections:
+
+<CodeGroup>
+  ```javascript Incoming WebSocket (Port 5100)
+  // Observer clients connect here
+  const socket = io('http://localhost:5100');
+  
+  // Authenticate as observer
+  socket.emit('obs_logon', JSON.stringify({
+    type: 'auth',
+    obsName: 'Observer 1',
+    groupCode: 'TEST01',
+    groupSecret: 'secret123',
+    key: 'DEBUG_REMOVE_ME',
+    clientVersion: '0.3.2',
+    leftTeam: { name: 'Team A', tricode: 'TMA', url: '', attackStart: true },
+    rightTeam: { name: 'Team B', tricode: 'TMB', url: '', attackStart: false }
+  }));
+  ```
+
+  ```javascript Outgoing WebSocket (Port 5200)
+  // Frontends connect here
+  const socket = io('http://localhost:5200');
+  
+  // Join a match room
+  socket.emit('logon', JSON.stringify({
+    groupCode: 'TEST01'
+  }));
+  
+  // Listen for game state updates (every 100ms)
+  socket.on('match_data', (data) => {
+    console.log('Received game state:', data);
+  });
+  ```
+</CodeGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Server won't start or immediately exits">
+    Check the logs:
+    ```bash
+    docker compose logs valo-spectra-server
+    ```
+    
+    Common issues:
+    - Port already in use (5100, 5101, or 5200)
+    - Invalid SSL certificate paths when `INSECURE=false`
+    - Missing environment variables
+  </Accordion>
+
+  <Accordion title="Cannot connect to WebSocket">
+    Verify:
+    - Server is running: `docker compose ps`
+    - Ports are accessible: `curl http://localhost:5101/status`
+    - Firewall rules allow connections on ports 5100, 5101, 5200
+    - Client version is compatible with server version
+  </Accordion>
+
+  <Accordion title="Authentication failing">
+    Check:
+    - `REQUIRE_AUTH_KEY` is set to `false` for testing, or
+    - `AUTH_KEY` matches the key provided by the client
+    - Client is sending proper authentication packet format
+  </Accordion>
+</AccordionGroup>
+
+<Tip>
+  For development, set `REQUIRE_AUTH_KEY=false` in your environment to skip authentication and test connectivity quickly.
+</Tip>
+
+## Running from Source (Development)
+
+If you prefer to run from source instead of Docker:
+
+<Steps>
+  <Step title="Clone and Install">
+    ```bash
+    git clone https://github.com/ValoSpectra/Spectra-Server.git
+    cd Spectra-Server
+    yarn install
+    ```
+  </Step>
+
+  <Step title="Configure Environment">
+    Copy `.env.example` to `.env` and configure:
+    ```bash
+    cp .env.example .env
+    # Edit .env with your settings
+    ```
+  </Step>
+
+  <Step title="Start Development Server">
+    ```bash
+    yarn dev
+    ```
+    
+    This uses `tsx watch` for automatic reloading on code changes.
+  </Step>
+</Steps>
+
+<Note>
+  Running from source requires **Node.js 18+** and **Yarn 4.7.0+**.
 </Note>

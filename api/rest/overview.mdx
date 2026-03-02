@@ -1,0 +1,142 @@
+---
+title: REST API Overview
+description: Introduction to the Spectra Server REST API for match data and preview management
+---
+
+## Overview
+
+The Spectra Server REST API provides endpoints for managing match data, previews, organization verification, and server health monitoring. All endpoints are available via HTTP or HTTPS depending on your server configuration.
+
+## Base URL and Port
+
+The REST API runs on port **5101** by default:
+
+```
+http://localhost:5101
+```
+
+Or for HTTPS:
+
+```
+https://your-domain:5101
+```
+
+## HTTPS vs INSECURE Mode
+
+The server can run in two modes:
+
+### HTTPS Mode (Production)
+
+By default, the server runs with TLS encryption enabled. You must configure SSL certificates:
+
+```env
+INSECURE=false
+SERVER_KEY=/path/to/private-key.pem
+SERVER_CERT=/path/to/certificate.pem
+```
+
+Implementation reference: `src/index.ts:99-106`
+
+```typescript
+const key = readFileSync(process.env.SERVER_KEY!);
+const cert = readFileSync(process.env.SERVER_CERT!);
+const creds = { key, cert };
+const server = createSecureServer(creds, app);
+server.listen(port, () => {
+  Log.info(`Extras available on port ${port} (TLS)`);
+});
+```
+
+### INSECURE Mode (Development)
+
+For local development, you can disable HTTPS:
+
+```env
+INSECURE=true
+```
+
+Implementation reference: `src/index.ts:95-98`
+
+```typescript
+if (process.env.INSECURE == "true") {
+  app.listen(port, () => {
+    Log.info(`Extras available on port ${port}`);
+  });
+}
+```
+
+<Warning>
+Never use INSECURE mode in production environments. Always use proper TLS certificates.
+</Warning>
+
+## Authentication
+
+Most endpoints require authentication via an API key:
+
+- **Preview Creation**: Requires a valid `key` in the request body
+- **Organization Lookup**: Requires a valid `key` as a query parameter
+- **Team Info**: No authentication required (uses group code)
+- **Status**: Public endpoint, no authentication required
+
+Keys are validated against the backend when `USE_BACKEND=true` is configured.
+
+## CORS Policy
+
+All endpoints support Cross-Origin Resource Sharing (CORS) with unrestricted access:
+
+```typescript
+cors({ origin: "*" })
+```
+
+Implementation reference: `src/index.ts:19`
+
+All responses include the header:
+
+```
+Access-Control-Allow-Origin: *
+```
+
+## Rate Limits
+
+Currently, there are no rate limits enforced at the API level. However:
+
+- Preview codes expire after **10 minutes**
+- Team info cached for **60 minutes** (1 hour)
+- Inactive matches removed after **30 minutes**
+
+## Response Format
+
+All endpoints return JSON responses with appropriate HTTP status codes:
+
+- `200` - Success
+- `400` - Bad Request (invalid parameters)
+- `401` - Unauthorized (invalid API key)
+- `403` - Forbidden (key validation failed)
+- `404` - Not Found (resource doesn't exist)
+
+## Error Responses
+
+Error responses follow this format:
+
+```json
+{
+  "error": "Description of the error"
+}
+```
+
+Some endpoints may include additional details:
+
+```json
+{
+  "error": "Invalid preview data",
+  "details": "Detailed error message"
+}
+```
+
+## Available Endpoints
+
+- [GET /status](/api/rest/status) - Server health check
+- [PUT /createPreview](/api/rest/previews#create-preview) - Create match preview
+- [GET /preview/:previewCode](/api/rest/previews#get-preview) - Retrieve preview data
+- [GET /getOrgForKey](/api/rest/organization) - Verify organization key
+- [GET /getTeamInfoForCode](/api/rest/team-info) - Get team information

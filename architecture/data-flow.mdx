@@ -1,0 +1,429 @@
+---
+title: Data Flow
+description: Detailed walkthrough of data flow from observer clients through the server to broadcast frontends
+---
+
+## Overview
+
+Spectra Server acts as a real-time data pipeline, receiving game state from observer clients, processing it through the match orchestration layer, and broadcasting it to connected frontends. This page details the complete data journey.
+
+## Observer Client Connection Flow
+
+The primary data flow begins when an observer client connects to port 5100.
+
+### Authentication Sequence
+
+<Steps>
+  <Step title="WebSocket Connection">
+    Client establishes WebSocket connection to `wss://server:5100` (or `ws://` in insecure mode)
+  </Step>
+  
+  <Step title="Logon Event">
+    Client sends `obs_logon` event with authentication payload:
+    
+    ```typescript
+    {
+      type: "authenticate",
+      clientVersion: "1.0.0",
+      obsName: "Observer Name",
+      key: "access-key-here",
+      groupCode: "ABCD1234",
+      leftTeam: { name: "Team A", tricode: "TMA", ... },
+      rightTeam: { name: "Team B", tricode: "TMB", ... },
+      toolsData: { /* overlay configurations */ }
+    }
+    ```
+  </Step>
+  
+  <Step title="Server Validation">
+    Server validates the request (see src/connector/websocketIncoming.ts:66):
+    
+    - **Packet validation**: Ensures type is `DataTypes.AUTH`
+    - **Version check**: Calls `isCompatibleVersion()` to verify client compatibility
+    - **Key validation**: Checks access key via `isValidKey()` method:
+      - If `REQUIRE_AUTH_KEY=false`, automatically valid
+      - If matches `AUTH_KEY` env var, valid
+      - If `USE_BACKEND=true`, validates against backend API
+    - **Match creation**: Calls `MatchController.createMatch()`
+  </Step>
+  
+  <Step title="Match Creation Response">
+    On success, server:
+    
+    1. Creates new `Match` instance
+    2. Generates 12-character `groupSecret` for reconnection
+    3. Stores match in `MatchController.matches` registry
+    4. Sends `obs_logon_ack` event:
+    
+    ```typescript
+    {
+      type: "authenticate",
+      value: true,
+      reason: "GROUPSECRET123" // or "reconnected"
+    }
+    ```
+    
+    5. Registers `obs_data` event listener for game state
+  </Step>
+</Steps>
+
+<Info>
+**Reconnection Support**: If a client disconnects and reconnects with the same group code and group secret, the server reuses the existing match instance rather than creating a new one (see src/controller/MatchController.ts:46).
+</Info>
+
+## Game State Ingestion
+
+Once authenticated, the observer client begins sending game data through the `obs_data` event.
+
+### Data Processing Pipeline
+
+<Steps>
+  <Step title="Event Reception">
+    Server receives `obs_data` event (src/connector/websocketIncoming.ts:249):
+    
+    ```typescript
+    ws.on("obs_data", async (msg: any) => {
+      const data = JSON.parse(msg.toString());
+      if (isAuthedData(data)) {
+        await this.matchController.receiveMatchData(data);
+      }
+    });
+    ```
+  </Step>
+  
+  <Step title="Match Routing">
+    `MatchController.receiveMatchData()` routes data to the correct match instance (src/controller/MatchController.ts:96):
+    
+    - Adds timestamp to data
+    - Finds match by `groupCode`
+    - Validates match exists
+    - Forwards to `Match.receiveMatchSpecificData()`
+  </Step>
+  
+  <Step title="Event Type Handling">
+    The `Match` class processes different event types (src/model/Match.ts:102):
+    
+    **Scoreboard Events** (`DataTypes.SCOREBOARD`):
+    - Routes to correct team by `startTeam` ID
+    - Detects spike plants (300 credit increase)
+    - Updates player stats (K/D/A, money, ult points)
+    
+    **Roster Events** (`DataTypes.ROSTER`):
+    - Updates agent selections
+    - Tracks agent select start time
+    - Updates player positions
+    
+    **Killfeed Events** (`DataTypes.KILLFEED`):
+    - Broadcasts to both teams
+    - Tracks kills, assists, weapons used
+    
+    **Round Info** (`DataTypes.ROUND_INFO`):
+    - Updates round number and phase
+    - Handles side switches at round 13 and OT rounds
+    - Triggers backend updates on round start
+    - Manages timeout grants in overtime
+    
+    **Match Start** (`DataTypes.MATCH_START`):
+    - Stores match ID from game
+    - Registers match with backend (if enabled)
+    - Sets `isRunning = true`
+    
+    **Score Updates** (`DataTypes.SCORE`):
+    - Determines round winner
+    - Calculates round end reason (kills/defuse/detonation/timeout)
+    - Updates team scores
+  </Step>
+  
+  <Step title="Event Number Increment">
+    After processing each event, `Match.eventNumber++` is called. This triggers the broadcast system to detect new data.
+  </Step>
+</Steps>
+
+### Event Type Reference
+
+The server handles these primary event types (defined in src/model/eventData.ts:155):
+
+| Event Type | Purpose | Frequency |
+|------------|---------|----------|
+| `SCOREBOARD` | Player stats, money, ult, armor | ~Every tick |
+| `ROSTER` | Agent selection, player order | Agent select phase |
+| `KILLFEED` | Kill/death notifications | Per elimination |
+| `ROUND_INFO` | Round phase, round number | Phase changes |
+| `SCORE` | Team scores after round end | Per round |
+| `MATCH_START` | Match UUID from game | Once per match |
+| `MAP` | Map being played | Once per match |
+| `GAME_MODE` | Bomb/Swift play | Once per match |
+| `OBSERVING` | Currently observed player | When observer switches |
+| `SPIKE_PLANTED` | Spike plant notification | Per spike plant |
+| `SPIKE_DEFUSED` | Spike defusal | Per defusal |
+| `SPIKE_DETONATED` | Spike explosion | Per detonation |
+
+<Note>
+Spike plant detection has two mechanisms:
+1. **Direct event**: Client sends explicit `SPIKE_PLANTED` event via hotkey
+2. **Automatic detection**: Server detects 300 credit increase in scoreboard data (src/model/Match.ts:443)
+</Note>
+
+## Match State Management
+
+The `Match` class maintains comprehensive game state:
+
+### Core State
+```typescript
+{
+  matchId: string,              // Game-assigned UUID
+  groupCode: string,            // User-assigned code (e.g., "ABCD1234")
+  groupSecret: string,          // 12-char reconnection token
+  roundNumber: number,          // Current round (1-25+)
+  roundPhase: string,           // "LOBBY", "shopping", "combat", "end", "game_end"
+  isRunning: boolean,           // Match active status
+  map: string,                  // Map name
+  teams: Team[],                // Two Team instances
+  spikeState: {                 // Spike tracking
+    planted: boolean,
+    detonated: boolean,
+    defused: boolean
+  },
+  timeoutState: {               // Timeout tracking
+    techPause: boolean,
+    leftTeam: boolean,
+    rightTeam: boolean,
+    timeRemaining: number
+  },
+  eventNumber: number,          // Increments on each state change
+  // ... plus tools, sponsors, watermark configs
+}
+```
+
+### State Updates Flow
+
+<Steps>
+  <Step title="Event Received">
+    New event data arrives via `receiveMatchSpecificData()`
+  </Step>
+  
+  <Step title="Replay Logging">
+    Event written to `ReplayLogging` for match replay capability
+  </Step>
+  
+  <Step title="Type-Specific Processing">
+    Event processed based on type (scoreboard, killfeed, etc.)
+  </Step>
+  
+  <Step title="Event Number Increment">
+    `this.eventNumber++` marks state as changed
+  </Step>
+  
+  <Step title="Broadcast Detection">
+    Send loop detects `eventNumber` increase and triggers broadcast
+  </Step>
+</Steps>
+
+## Broadcasting to Frontends
+
+### Frontend Connection
+
+<Steps>
+  <Step title="WebSocket Connection">
+    Frontend connects to `wss://server:5200`
+  </Step>
+  
+  <Step title="Logon Event">
+    Frontend sends simple logon with group code:
+    
+    ```typescript
+    ws.emit('logon', JSON.stringify({ groupCode: 'ABCD1234' }));
+    ```
+  </Step>
+  
+  <Step title="Room Join">
+    Server joins socket to room named by group code (src/connector/websocketOutgoing.ts:62):
+    
+    ```typescript
+    ws.join(json.groupCode);
+    ```
+  </Step>
+  
+  <Step title="Initial State">
+    Server sends current match state via `sendMatchDataForLogon()` (src/controller/MatchController.ts:134)
+  </Step>
+  
+  <Step title="Logon Success">
+    Server emits confirmation:
+    
+    ```typescript
+    ws.emit('logon_success', JSON.stringify({
+      groupCode: json.groupCode,
+      msg: `Logon succeeded for group code ${json.groupCode}`
+    }));
+    ```
+  </Step>
+</Steps>
+
+### Broadcast Loop
+
+The `MatchController` runs a continuous send loop at 100ms intervals (src/controller/MatchController.ts:160):
+
+```typescript
+this.sendInterval = setInterval(async () => {
+  for (const groupCode in this.matches) {
+    // Check if event number has increased
+    if (this.matches[groupCode].eventNumber > this.eventNumbers[groupCode]) {
+      // Broadcast updated match state
+      this.outgoingWebsocketServer.sendMatchData(groupCode, this.matches[groupCode]);
+      // Update tracked event number
+      this.eventNumbers[groupCode] = this.matches[groupCode].eventNumber;
+      this.eventTimes[groupCode] = Date.now();
+    } else {
+      // Check for inactive matches (30 minute timeout)
+      if (Date.now() - this.eventTimes[groupCode] > 1000 * 60 * 30) {
+        this.removeMatch(groupCode);
+      }
+    }
+  }
+}, 100);
+```
+
+<Info>
+**Efficient Broadcasting**: The server only sends data when `eventNumber` has increased, preventing redundant broadcasts and reducing bandwidth.
+</Info>
+
+### Data Filtering
+
+Before broadcasting, sensitive data is removed (src/connector/websocketOutgoing.ts:88):
+
+```typescript
+const {
+  replayLog,           // Internal event log
+  eventNumber,         // Internal counter
+  groupSecret,         // Reconnection token
+  playercamUrl,        // Private playercam data
+  timeoutEndTimeout,   // Internal timer
+  timeoutRemainingLoop,// Internal timer
+  ...formattedData
+} = data;
+
+// Also remove playercam secret from tools
+if (deepMod.tools?.playercamsInfo) {
+  delete deepMod.tools.playercamsInfo.secret;
+  delete deepMod.tools.playercamsInfo.endTime;
+}
+
+// Broadcast filtered data
+this.wss.to(groupCode).emit('match_data', JSON.stringify(deepMod));
+```
+
+## Auxiliary Client Data Flow
+
+Auxiliary clients provide additional game data (player abilities, health, etc.) using a separate authentication flow.
+
+<Steps>
+  <Step title="Auxiliary Connection">
+    Aux client connects to port 5100 and sends `aux_logon` event (src/connector/websocketIncoming.ts:158):
+    
+    ```typescript
+    {
+      type: "aux_authenticate",
+      clientVersion: "1.0.0",
+      name: "Player Name",
+      matchId: "uuid-from-game",
+      playerId: "player-uuid"
+    }
+    ```
+  </Step>
+  
+  <Step title="Match ID Validation">
+    Server finds match by `matchId` (not group code):
+    
+    ```typescript
+    const groupCode = this.matchController.findMatch(authenticationData.matchId);
+    if (groupCode == null) {
+      // Reject - match not found
+    }
+    ```
+  </Step>
+  
+  <Step title="Auxiliary Authentication">
+    Server authenticates and registers client, then listens for `aux_data` events
+  </Step>
+  
+  <Step title="Auxiliary Data Processing">
+    Aux data types include:
+    - `AUX_SCOREBOARD`: Player scoreboard from in-game
+    - `AUX_SCOREBOARD_TEAM`: Full team scoreboard
+    - `AUX_ABILITIES`: Ability charge counts
+    - `AUX_HEALTH`: Player health/armor
+    - `AUX_ASTRA_TARGETING`: Astra star targeting mode
+    - `AUX_CYPHER_CAM`: Cypher camera active state
+  </Step>
+  
+  <Step title="Multi-Match Support">
+    Aux data is sent to **all matches** with matching `matchId`, enabling tournament servers to track multiple concurrent games
+  </Step>
+</Steps>
+
+<Note>
+**Disconnection Handling**: When an auxiliary client disconnects, the server marks their player as disconnected in the match state (src/connector/websocketIncoming.ts:233), allowing frontends to show disconnected status.
+</Note>
+
+## Match Lifecycle
+
+A complete match flow from creation to cleanup:
+
+<Steps>
+  <Step title="Match Creation">
+    Observer authenticates → Match instance created → Stored in registry
+  </Step>
+  
+  <Step title="Agent Select">
+    Roster events update agent selections → Agent select start time recorded
+  </Step>
+  
+  <Step title="Match Start">
+    Game assigns match ID → Backend registration (if enabled) → Stats tracking begins
+  </Step>
+  
+  <Step title="Round Loop">
+    For each round:
+    - Shopping phase → Side switches (if applicable)
+    - Combat phase → Scoreboard/killfeed/spike events
+    - End phase → Score calculation → Round reasons determined
+  </Step>
+  
+  <Step title="Game End">
+    Round phase becomes `game_end` → Backend completion → Stats fetch (supporters) → Match removed from registry after 5 seconds
+  </Step>
+  
+  <Step title="Timeout Cleanup">
+    If no events for 30 minutes → Automatic match completion and removal (src/controller/MatchController.ts:168)
+  </Step>
+</Steps>
+
+## Performance Characteristics
+
+### Broadcast Efficiency
+- **100ms send interval**: Maximum 10 updates/second
+- **Room-based broadcasting**: Only sends to subscribed frontends
+- **Event-driven**: Only broadcasts when state changes
+- **Compression**: perMessageDeflate reduces bandwidth ~60-70%
+
+### Scalability
+- **Multiple matches**: Single server handles many concurrent matches
+- **Multiple frontends**: Unlimited viewers per match (room-based)
+- **Singleton controller**: `MatchController` and `WebsocketOutgoing` use singleton pattern
+- **Automatic cleanup**: Inactive matches removed to prevent memory leaks
+
+<Info>
+**Production Tip**: For high-load scenarios with many concurrent matches, monitor the send loop performance. The 100ms interval processes all active matches sequentially.
+</Info>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="System Components" icon="cubes" href="/architecture/system-components">
+    Explore detailed implementation of each component
+  </Card>
+  <Card title="Architecture Overview" icon="diagram-project" href="/architecture/overview">
+    Return to high-level architecture overview
+  </Card>
+</CardGroup>

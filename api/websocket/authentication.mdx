@@ -1,0 +1,506 @@
+---
+title: "WebSocket Authentication"
+description: "Observer and auxiliary client authentication flows"
+---
+
+## Overview
+
+Port 5100 requires authentication before accepting game data. There are two authentication flows:
+
+1. **Observer authentication** (`obs_logon`): For clients sending match data from observer mode
+2. **Auxiliary authentication** (`aux_logon`): For clients sending player-specific data
+
+Port 5200 does not require authentication - clients simply join rooms with a `groupCode`.
+
+## Observer Authentication (obs_logon)
+
+Observer clients authenticate using the `obs_logon` event.
+
+### IAuthenticationData Schema
+
+From `src/model/eventData.ts:82-95`:
+
+```typescript
+export interface IAuthenticationData {
+  type: DataTypes.AUTH;
+  clientVersion: string;
+  obsName: string;
+  key: string;
+  groupCode: string;
+  groupSecret?: string;
+  leftTeam: AuthTeam;
+  rightTeam: AuthTeam;
+  toolsData: ToolsData;
+  // organizationId added later, not in client
+  organizationId?: string;
+  isSupporter?: boolean;
+}
+```
+
+### AuthTeam Schema
+
+From `src/connector/websocketIncoming.ts:312-317`:
+
+```typescript
+export interface AuthTeam {
+  name: string;
+  tricode: string;
+  url: string;
+  attackStart: boolean;
+}
+```
+
+### Authentication Flow
+
+From `websocketIncoming.ts:66-156`:
+
+```typescript
+ws.once("obs_logon", async (msg) => {
+  try {
+    const authenticationData: IAuthenticationData = JSON.parse(msg.toString());
+
+    if (WebsocketIncoming.authedClients.find((client) => client.ws.id === ws.id) != undefined)
+      return;
+
+    // Check if the packet is valid
+    if (authenticationData.type !== DataTypes.AUTH) {
+      ws.emit(
+        "obs_logon_ack",
+        JSON.stringify({ type: DataTypes.AUTH, value: false, reason: `Invalid packet.` }),
+      );
+      ws.disconnect();
+      Log.info(`Received BAD auth request, invalid packet.`);
+      return;
+    }
+
+    // Check if the client version is compatible with the server version
+    if (!isCompatibleVersion(authenticationData.clientVersion)) {
+      ws.emit(
+        "obs_logon_ack",
+        JSON.stringify({
+          type: DataTypes.AUTH,
+          value: false,
+          reason: `Client version ${authenticationData.clientVersion} is not compatible with server version ${module.exports.version}.`,
+        }),
+      );
+      ws.disconnect();
+      Log.info(
+        `Received BAD auth request from ${authenticationData.obsName}, using Group Code ${authenticationData.groupCode} and key ${authenticationData.key}, incompatible client version ${authenticationData.clientVersion}.`,
+      );
+      return;
+    }
+
+    // Check if the key is valid
+    const validity = await this.isValidKey(authenticationData.key);
+    if (validity.valid === false) {
+      ws.emit(
+        "obs_logon_ack",
+        JSON.stringify({ type: DataTypes.AUTH, value: false, reason: validity.reason }),
+      );
+      ws.disconnect();
+      Log.info(
+        `Received BAD auth request from ${authenticationData.obsName}, using Group Code ${authenticationData.groupCode} and key ${authenticationData.key}`,
+      );
+      return;
+    } else {
+      //key is valid
+      if (validity.organizationId) {
+        authenticationData.organizationId = validity.organizationId;
+      }
+      authenticationData.isSupporter = validity.isSupporter;
+    }
+
+    // Check if the match can be created successfully
+    const groupSecret = await this.matchController.createMatch(authenticationData);
+    if (!groupSecret || groupSecret === "") {
+      ws.emit(
+        "obs_logon_ack",
+        JSON.stringify({
+          type: DataTypes.AUTH,
+          value: false,
+          reason: `Game with Group Code ${authenticationData.groupCode} exists and is still live.`,
+        }),
+      );
+      ws.disconnect();
+      Log.info(
+        `Received BAD auth request from ${authenticationData.obsName}, using Group Code ${authenticationData.groupCode} and key ${authenticationData.key}`,
+      );
+      return;
+    }
+
+    // All checks passed, send logon acknolwedgement
+    ws.emit(
+      "obs_logon_ack",
+      JSON.stringify({ type: DataTypes.AUTH, value: true, reason: groupSecret }),
+    );
+    user.name = authenticationData.obsName;
+    user.groupCode = authenticationData.groupCode;
+    WebsocketIncoming.authedClients.push(user);
+
+    Log.info(
+      `Received VALID auth request from ${authenticationData.obsName}, using Group Code ${authenticationData.groupCode} and with teams ${authenticationData.leftTeam.name} and ${authenticationData.rightTeam.name}`,
+    );
+    this.onAuthSuccess(user);
+  } catch (e) {
+    Log.error(`Error parsing incoming auth request: ${e}`);
+    Log.error(e);
+  }
+});
+```
+
+### Validation Steps
+
+1. **Duplicate check**: Ensure client hasn't already authenticated
+2. **Packet type check**: Verify `type === DataTypes.AUTH`
+3. **Client version compatibility**: Check using `isCompatibleVersion()`
+4. **Key validation**: Verify API key via `isValidKey()`
+5. **Match creation**: Attempt to create match with `matchController.createMatch()`
+
+### obs_logon_ack Response
+
+**Success:**
+
+```typescript
+{
+  type: "authenticate",
+  value: true,
+  reason: "<groupSecret>" // Secret token for match validation
+}
+```
+
+**Failure:**
+
+```typescript
+{
+  type: "authenticate",
+  value: false,
+  reason: "<error message>"
+}
+```
+
+### Failure Reasons
+
+- `"Invalid packet."` - Type field is not `DataTypes.AUTH`
+- `"Client version X is not compatible with server version Y."` - Version mismatch
+- Key validation errors (from `isValidKey()`)
+- `"Game with Group Code X exists and is still live."` - Duplicate match
+
+<Note>
+On authentication failure, the server **immediately disconnects** the client after sending `obs_logon_ack`.
+</Note>
+
+## Auxiliary Authentication (aux_logon)
+
+Auxiliary clients authenticate using the `aux_logon` event.
+
+### IAuxAuthenticationData Schema
+
+From `src/model/eventData.ts:98-104`:
+
+```typescript
+export interface IAuxAuthenticationData {
+  type: DataTypes.AUX_AUTH;
+  clientVersion: string;
+  name: string;
+  matchId: string;
+  playerId: string;
+}
+```
+
+### Authentication Flow
+
+From `websocketIncoming.ts:158-227`:
+
+```typescript
+ws.once("aux_logon", async (msg) => {
+  try {
+    const authenticationData: IAuxAuthenticationData = JSON.parse(msg.toString());
+
+    if (WebsocketIncoming.authedClients.find((client) => client.ws.id === ws.id) != undefined)
+      return;
+
+    // Check if the packet is valid
+    if (authenticationData.type !== DataTypes.AUX_AUTH) {
+      ws.emit(
+        "aux_logon_ack",
+        JSON.stringify({ type: DataTypes.AUTH, value: false, reason: `Invalid packet.` }),
+      );
+      ws.disconnect();
+      Log.info(`Received BAD aux auth request, invalid packet.`);
+      return;
+    }
+
+    // Check if the client version is compatible with the server version
+    if (!isCompatibleVersion(authenticationData.clientVersion)) {
+      ws.emit(
+        "aux_logon_ack",
+        JSON.stringify({
+          type: DataTypes.AUTH,
+          value: false,
+          reason: `Client version ${authenticationData.clientVersion} is not compatible with server version ${module.exports.version}.`,
+        }),
+      );
+      ws.disconnect();
+      Log.info(
+        `Received BAD aux auth request from ${authenticationData.playerId} for match ${authenticationData.matchId}, incompatible client version ${authenticationData.clientVersion}.`,
+      );
+      return;
+    }
+
+    const groupCode = this.matchController.findMatch(authenticationData.matchId);
+    // Check if the match exists
+    if (groupCode == null) {
+      ws.emit(
+        "aux_logon_ack",
+        JSON.stringify({
+          type: DataTypes.AUTH,
+          value: false,
+          reason: `Game with Match ID ${authenticationData.matchId} not found.`,
+        }),
+      );
+      ws.disconnect();
+      Log.info(
+        `Received BAD aux auth request from ${authenticationData.playerId} for match ${authenticationData.matchId}, match not found.`,
+      );
+      return;
+    }
+
+    // All checks passed, send logon acknolwedgement
+    ws.emit("aux_logon_ack", JSON.stringify({ type: DataTypes.AUX_AUTH, value: true }));
+    user.name = authenticationData.name;
+    user.groupCode = groupCode;
+    user.isAuxiliary = true;
+    user.playerId = authenticationData.playerId;
+    WebsocketIncoming.authedClients.push(user);
+
+    Log.info(
+      `Received VALID aux auth request from ${authenticationData.playerId} for Group Code ${groupCode}`,
+    );
+    this.onAuthSuccess(user);
+  } catch (e) {
+    Log.error(`Error parsing incoming auth request: ${e}`);
+    Log.error(e);
+  }
+});
+```
+
+### Validation Steps
+
+1. **Duplicate check**: Ensure client hasn't already authenticated
+2. **Packet type check**: Verify `type === DataTypes.AUX_AUTH`
+3. **Client version compatibility**: Check using `isCompatibleVersion()`
+4. **Match existence**: Verify match exists via `matchController.findMatch()`
+
+### aux_logon_ack Response
+
+**Success:**
+
+```typescript
+{
+  type: "aux_authenticate",
+  value: true
+}
+```
+
+**Failure:**
+
+```typescript
+{
+  type: "authenticate", // Note: Uses AUTH not AUX_AUTH
+  value: false,
+  reason: "<error message>"
+}
+```
+
+### Failure Reasons
+
+- `"Invalid packet."` - Type field is not `DataTypes.AUX_AUTH`
+- `"Client version X is not compatible with server version Y."` - Version mismatch
+- `"Game with Match ID X not found."` - Match doesn't exist
+
+<Note>
+Auxiliary authentication does **not** require an API key. It only requires a valid `matchId` from an existing match.
+</Note>
+
+## Key Validation
+
+Observer authentication validates API keys using `isValidKey()`.
+
+### isValidKey Implementation
+
+From `websocketIncoming.ts:275-287`:
+
+```typescript
+public async isValidKey(key: string): Promise<KeyValidity> {
+  if (process.env.REQUIRE_AUTH_KEY === "false")
+    return { valid: true, reason: ValidityReasons.VALID };
+
+  if (process.env.AUTH_KEY === key) return { valid: true, reason: ValidityReasons.VALID };
+
+  let validity: KeyValidity = { valid: false, reason: ValidityReasons.INVALID };
+  if (process.env.USE_BACKEND === "true") {
+    validity = await DatabaseConnector.verifyAccessKey(key);
+  }
+
+  return validity;
+}
+```
+
+### Validation Methods
+
+1. **REQUIRE_AUTH_KEY=false**: Skip validation entirely
+2. **AUTH_KEY environment variable**: Accept single static key
+3. **USE_BACKEND=true**: Validate against database via `DatabaseConnector.verifyAccessKey()`
+
+### KeyValidity Interface
+
+```typescript
+interface KeyValidity {
+  valid: boolean;
+  reason: ValidityReasons;
+  organizationId?: string;
+  isSupporter?: boolean;
+}
+```
+
+The server adds `organizationId` and `isSupporter` to the authentication data if provided by the key validation.
+
+## Client Version Compatibility
+
+Both authentication flows check client version compatibility using `isCompatibleVersion()`.
+
+This ensures observer/auxiliary clients are running compatible software versions with the server.
+
+<Note>
+Version compatibility logic is defined in `src/util/CompatibleClients.ts` (not shown in source files).
+</Note>
+
+## Group Code and Match Setup
+
+### Observer Flow
+
+When an observer authenticates:
+
+1. Server calls `matchController.createMatch(authenticationData)`
+2. Match is created with `groupCode`, team data, and tools configuration
+3. Server generates a `groupSecret` for match validation
+4. `groupSecret` is returned in `obs_logon_ack` response
+
+### Auxiliary Flow
+
+When an auxiliary client authenticates:
+
+1. Server calls `matchController.findMatch(matchId)`
+2. Server looks up the `groupCode` for the given `matchId`
+3. Auxiliary client is associated with that `groupCode`
+4. No `groupSecret` is returned (not needed for auxiliary clients)
+
+## Error Scenarios and Disconnection
+
+The server **disconnects clients** on authentication failure:
+
+```typescript
+ws.emit("obs_logon_ack", JSON.stringify({ /* error response */ }));
+ws.disconnect();
+```
+
+Clients should listen for disconnection and handle errors gracefully:
+
+```typescript
+socket.on("obs_logon_ack", (msg) => {
+  const response = JSON.parse(msg);
+  if (!response.value) {
+    console.error("Authentication failed:", response.reason);
+    // Socket will be disconnected by server
+  }
+});
+
+socket.on("disconnect", () => {
+  console.log("Disconnected from server");
+});
+```
+
+## Authentication Example
+
+### Observer Client
+
+```typescript
+import { io } from "socket.io-client";
+
+const socket = io("wss://server:5100");
+
+socket.on("connect", () => {
+  socket.emit("obs_logon", JSON.stringify({
+    type: "authenticate",
+    clientVersion: "1.0.0",
+    obsName: "Observer 1",
+    key: "your-api-key-here",
+    groupCode: "MATCH123",
+    leftTeam: {
+      name: "Team Alpha",
+      tricode: "TMA",
+      url: "https://example.com/team-alpha",
+      attackStart: true
+    },
+    rightTeam: {
+      name: "Team Bravo",
+      tricode: "TMB",
+      url: "https://example.com/team-bravo",
+      attackStart: false
+    },
+    toolsData: {
+      // Tools configuration
+    }
+  }));
+});
+
+socket.on("obs_logon_ack", (msg) => {
+  const response = JSON.parse(msg);
+  if (response.value) {
+    console.log("Authenticated successfully!");
+    console.log("Group secret:", response.reason);
+    // Now ready to send obs_data events
+  } else {
+    console.error("Auth failed:", response.reason);
+  }
+});
+```
+
+### Auxiliary Client
+
+```typescript
+import { io } from "socket.io-client";
+
+const socket = io("wss://server:5100");
+
+socket.on("connect", () => {
+  socket.emit("aux_logon", JSON.stringify({
+    type: "aux_authenticate",
+    clientVersion: "1.0.0",
+    name: "Player 1",
+    matchId: "abc123-def456-ghi789",
+    playerId: "player-uuid-1234"
+  }));
+});
+
+socket.on("aux_logon_ack", (msg) => {
+  const response = JSON.parse(msg);
+  if (response.value) {
+    console.log("Auxiliary client authenticated!");
+    // Now ready to send aux_data events
+  } else {
+    console.error("Auth failed:", response.reason);
+  }
+});
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Data Events" icon="table" href="./data-events">
+    Learn about obs_data and aux_data event structures
+  </Card>
+  <Card title="Incoming Connection" icon="arrow-down-to-bracket" href="./incoming-connection">
+    Complete incoming WebSocket server documentation
+  </Card>
+</CardGroup>

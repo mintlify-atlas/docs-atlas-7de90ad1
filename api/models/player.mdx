@@ -1,0 +1,436 @@
+---
+title: 'Player'
+description: 'Individual player data model tracking stats, state, and performance'
+---
+
+## Overview
+
+The `Player` class represents a single player in a match, tracking their identity, agent selection, in-game stats, equipment, and state across rounds.
+
+## Player Class
+
+```typescript
+export class Player {
+  // Identity
+  private name: string;
+  private tagline: string;
+  private riotId: string;
+  private searchName: string;  // "Name #TAG"
+  private fullName: string;    // "Name#TAG"
+  private position: number;
+  
+  // Agent
+  private agentInternal: string = "";
+  private agentProper: string = "";
+  private locked: boolean = false;
+  
+  // State
+  private isAlive: boolean = true;
+  private hasSpike: boolean = false;
+  private isObserved: boolean = false;
+  private health: number = 100;
+  
+  // Stats
+  private kills: number = 0;
+  private deaths: number = 0;
+  private assists: number = 0;
+  private kdRatio: number = 0;
+  private killsThisRound: number = 0;
+  private deathsThisRound: number = 0;
+  
+  // Ultimate
+  private currUltPoints: number = 0;
+  private maxUltPoints: number = 0;
+  private ultReady: boolean = false;
+  
+  // Economy
+  private money: number = 0;
+  private moneySpent: number = 0;
+  private spentMoneyThisRound: boolean = false;
+  
+  // Equipment
+  private armorName: string;
+  private highestWeapon: string;
+  
+  // Abilities (from auxiliary data)
+  private abilities: AvailableAbilities;
+  
+  // Advanced Stats
+  private teamKills: number = 0;
+  private headshotKills: number = 0;
+  private headshotRatio: number = 0;
+  private killedPlayerNames: string[] = [];
+  private killsByWeaponsAndAbilities: Record<string, number> = {};
+  private killsOnEnemyPlayer: Record<string, number> = {};
+  private killsOnTeammatePlayer: Record<string, number> = {};
+  
+  // Data Availability
+  private scoreboardAvailable: boolean = false;
+  private auxiliaryAvailable: AvailableAuxiliary;
+  private iconNameSuffix: string = "";
+}
+```
+
+## Properties
+
+### Identity
+
+<ResponseField name="name" type="string">
+  Player's in-game display name (without tagline).
+</ResponseField>
+
+<ResponseField name="tagline" type="string">
+  Riot ID tagline (the part after #).
+</ResponseField>
+
+<ResponseField name="riotId" type="string">
+  Unique player identifier (PUUID).
+</ResponseField>
+
+<ResponseField name="position" type="number">
+  Player's position in the team roster (0-4).
+</ResponseField>
+
+### Agent
+
+<ResponseField name="agentInternal" type="string">
+  Internal agent identifier from game data (e.g., "Clay_PC_C").
+</ResponseField>
+
+<ResponseField name="agentProper" type="string">
+  Human-readable agent name (e.g., "Raze").
+</ResponseField>
+
+<ResponseField name="locked" type="boolean">
+  Whether the agent selection is locked.
+</ResponseField>
+
+### Combat Stats
+
+<ResponseField name="kills" type="number" default="0">
+  Total kills in the match.
+</ResponseField>
+
+<ResponseField name="deaths" type="number" default="0">
+  Total deaths in the match.
+</ResponseField>
+
+<ResponseField name="assists" type="number" default="0">
+  Total assists in the match.
+</ResponseField>
+
+<ResponseField name="kdRatio" type="number" default="0">
+  Calculated kill/death ratio (kills ÷ deaths).
+</ResponseField>
+
+<ResponseField name="killsThisRound" type="number" default="0">
+  Kills in the current round (resets each round).
+</ResponseField>
+
+<ResponseField name="deathsThisRound" type="number" default="0">
+  Deaths in the current round (resets each round).
+</ResponseField>
+
+### State
+
+<ResponseField name="isAlive" type="boolean" default="true">
+  Whether the player is currently alive.
+</ResponseField>
+
+<ResponseField name="hasSpike" type="boolean" default="false">
+  Whether the player is carrying the spike.
+</ResponseField>
+
+<ResponseField name="isObserved" type="boolean" default="false">
+  Whether the observer camera is currently viewing this player.
+</ResponseField>
+
+<ResponseField name="health" type="number" default="100">
+  Current health points (0-100). Only available with auxiliary client.
+</ResponseField>
+
+### Ultimate
+
+<ResponseField name="currUltPoints" type="number" default="0">
+  Current ultimate points.
+</ResponseField>
+
+<ResponseField name="maxUltPoints" type="number" default="0">
+  Maximum ultimate points required for this agent.
+</ResponseField>
+
+<ResponseField name="ultReady" type="boolean" default="false">
+  Whether ultimate ability is ready to use (currUltPoints >= maxUltPoints).
+</ResponseField>
+
+### Economy
+
+<ResponseField name="money" type="number" default="0">
+  Current credits.
+</ResponseField>
+
+<ResponseField name="moneySpent" type="number" default="0">
+  Credits spent in the current round.
+</ResponseField>
+
+### Equipment
+
+<ResponseField name="armorName" type="string">
+  Current armor type.
+  
+  <Expandable title="Armor Types">
+    - Index 0: No armor
+    - Index 1: Light armor (25 HP)
+    - Index 2: Heavy armor (50 HP)
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="highestWeapon" type="string">
+  Best weapon the player is currently holding (translated name).
+</ResponseField>
+
+### Advanced Stats
+
+<ResponseField name="headshotKills" type="number" default="0">
+  Number of kills that were headshots.
+</ResponseField>
+
+<ResponseField name="headshotRatio" type="number" default="0">
+  Percentage of kills that were headshots (headshotKills ÷ kills).
+</ResponseField>
+
+<ResponseField name="teamKills" type="number" default="0">
+  Number of friendly fire kills.
+</ResponseField>
+
+<ResponseField name="killedPlayerNames" type="string[]">
+  List of player names killed this round.
+</ResponseField>
+
+<ResponseField name="killsByWeaponsAndAbilities" type="Record<string, number>">
+  Map of weapon/ability internal names to kill counts.
+</ResponseField>
+
+## Constructor
+
+```typescript
+constructor(data: IFormattedRoster)
+```
+
+Creates a new player from roster data.
+
+<ResponseField name="data" type="IFormattedRoster" required>
+  Initial roster information containing:
+  - `name`: Player name
+  - `tagline`: Riot ID tag
+  - `playerId`: PUUID
+  - `agentInternal`: Selected agent
+  - `position`: Roster position
+  - `locked`: Lock state
+</ResponseField>
+
+## Core Methods
+
+### updateFromScoreboard
+
+```typescript
+public updateFromScoreboard(data: IFormattedScoreboard): void
+```
+
+Updates player state from observer scoreboard data. This is the primary data source.
+
+<ResponseField name="data" type="IFormattedScoreboard" required>
+  <Expandable title="Scoreboard Fields">
+    - `agentInternal`: Current agent
+    - `kills`, `deaths`, `assists`: Stats
+    - `currUltPoints`, `maxUltPoints`: Ultimate state
+    - `money`: Current credits
+    - `isAlive`: Alive state
+    - `hasSpike`: Spike carrier status
+    - `initialArmor`: Armor type index
+    - `scoreboardWeaponInternal`: Best weapon
+  </Expandable>
+</ResponseField>
+
+### updateFromAuxiliaryScoreboard
+
+```typescript
+public updateFromAuxiliaryScoreboard(data: IFormattedScoreboard | IFormattedAuxScoreboardTeam): void
+```
+
+Fallback scoreboard update from auxiliary client. Only used if observer scoreboard is unavailable.
+
+### extractKillfeedInfo
+
+```typescript
+public extractKillfeedInfo(data: IFormattedKillfeed): void
+```
+
+Processes killfeed events to extract detailed stats:
+- Weapon/ability kill tracking
+- Headshot detection
+- Teamkill recording
+- Victim tracking
+
+### updateAbilities
+
+```typescript
+public updateAbilities(data: AvailableAbilities): void
+```
+
+Updates ability charges from auxiliary client.
+
+<ResponseField name="data" type="AvailableAbilities" required>
+  ```typescript
+  {
+    grenade: number;   // Q ability charges
+    ability1: number;  // E ability charges
+    ability2: number;  // C ability charges
+  }
+  ```
+</ResponseField>
+
+### setHealth
+
+```typescript
+public setHealth(health: number): void
+```
+
+Updates health from auxiliary client (0-100).
+
+### resetRoundSpecificValues
+
+```typescript
+public resetRoundSpecificValues(isSideSwitch: boolean): void
+```
+
+Resets per-round stats at the start of each round:
+- Clears `killsThisRound` and `deathsThisRound`
+- Resets money spent tracking
+- Clears killed player names
+- Resets state flags
+- Sets money to 800 on side switches
+
+## Getters
+
+```typescript
+public getName(): string
+public getSearchName(): string  // "Name #TAG"
+public getPlayerId(): string
+public getAgentInternal(): string
+public checkIsAlive(): boolean
+public getMoney(): number
+public getMoneySpent(): number
+public getKillsThisRound(): number
+public getDeathsThisRound(): number
+```
+
+## Helper Classes
+
+### AvailableAbilities
+
+```typescript
+export class AvailableAbilities {
+  grenade: number = 0;   // Q ability
+  ability1: number = 0;  // E ability
+  ability2: number = 0;  // C ability
+}
+```
+
+### AvailableAuxiliary
+
+```typescript
+export class AvailableAuxiliary {
+  health: boolean = false;
+  abilities: boolean = false;
+  scoreboard: boolean = false;
+}
+```
+
+Tracks which auxiliary data sources are connected for this player.
+
+## Agent-Specific Behavior
+
+<Expandable title="Clove (Smonk)">
+  When Clove uses ultimate:
+  - Detects when ult points drop to 0 while ultimate was ready
+  - Sets special icon suffix for "in-ultimate" state
+  - Resets icon on kill or damaging assist
+</Expandable>
+
+<Expandable title="Veto (Pine)">
+  When Veto transforms:
+  - Detects when ult points drop to 0 while ultimate was ready
+  - Sets special icon suffix for transformed state
+</Expandable>
+
+<Expandable title="Astra (Rift)">
+  Cosmic form tracking:
+  - Sets icon suffix when entering astral form
+  - Resets when exiting
+  - Requires auxiliary data feed
+</Expandable>
+
+<Expandable title="Cypher (Gumshoe)">
+  Camera usage tracking:
+  - Sets icon suffix when viewing camera
+  - Resets when exiting camera view
+  - Requires auxiliary data feed
+</Expandable>
+
+## Example Usage
+
+```typescript
+// Player is created from roster data
+const rosterData: IFormattedRoster = {
+  name: "PlayerOne",
+  tagline: "NA1",
+  playerId: "player-uuid-123",
+  startTeam: 0,
+  agentInternal: "Clay_PC_C",
+  position: 0,
+  locked: true,
+  rank: 24
+};
+
+const player = new Player(rosterData);
+
+// Update from scoreboard
+player.updateFromScoreboard({
+  name: "PlayerOne",
+  tagline: "NA1",
+  playerId: "player-uuid-123",
+  startTeam: 0,
+  agentInternal: "Clay_PC_C",
+  isAlive: true,
+  initialArmor: 2,
+  scoreboardWeaponInternal: "vandal",
+  currUltPoints: 6,
+  maxUltPoints: 7,
+  hasSpike: false,
+  money: 3400,
+  kills: 12,
+  deaths: 8,
+  assists: 5
+});
+
+// Process kill
+player.extractKillfeedInfo({
+  attacker: "PlayerOne",
+  victim: "Enemy1",
+  weaponKillfeedInternal: "vandal",
+  headshotKill: true,
+  assists: ["Teammate1"],
+  isTeamkill: false
+});
+
+// Update abilities from aux client
+player.updateAbilities({
+  grenade: 1,
+  ability1: 2,
+  ability2: 1
+});
+
+console.log(player.getName()); // "PlayerOne"
+console.log(player.getKillsThisRound()); // 1
+```

@@ -1,0 +1,623 @@
+---
+title: "WebSocket Data Events"
+description: "Event types and data schemas for game state transmission"
+---
+
+## Overview
+
+After authentication, clients send game data via three main events:
+
+- **obs_data**: Observer game state from port 5100
+- **aux_data**: Auxiliary player-specific data from port 5100
+- **match_data**: Broadcast to frontends on port 5200
+
+All data events use the `DataTypes` enum to identify event types.
+
+## DataTypes Enum
+
+From `src/model/eventData.ts:155-185`:
+
+```typescript
+export enum DataTypes {
+  SCOREBOARD = "scoreboard",
+  KILLFEED = "killfeed",
+  ROSTER = "roster",
+  MATCH_START = "match_start",
+  ROUND_INFO = "round_info",
+  TEAM_IS_ATTACKER = "team_is_attacker",
+  SCORE = "score",
+  GAME_MODE = "game_mode",
+  MAP = "map",
+  OBSERVING = "observing",
+  SPIKE_DETONATED = "spike_detonated",
+  SPIKE_DEFUSED = "spike_defused",
+  AUTH = "authenticate",
+  // Aux data types
+  AUX_AUTH = "aux_authenticate",
+  AUX_ABILITIES = "aux_abilities",
+  AUX_HEALTH = "aux_health",
+  AUX_SCOREBOARD = "aux_scoreboard",
+  AUX_SCOREBOARD_TEAM = "aux_scoreboard_team",
+  AUX_ASTRA_TARGETING = "aux_astra_targeting",
+  AUX_CYPHER_CAM = "aux_cypher_cam",
+  // Hotkey data types
+  SPIKE_PLANTED = "spike_planted",
+  TECH_PAUSE = "tech_pause",
+  LEFT_TIMEOUT = "left_timeout",
+  RIGHT_TIMEOUT = "right_timeout",
+  SWITCH_KDA_CREDITS = "switch_kda_credits",
+  // Preview data types
+  PREVIEW = "preview",
+}
+```
+
+## obs_data Event
+
+Observer clients send game state updates via `obs_data` events.
+
+### IAuthedData Schema
+
+From `src/model/eventData.ts:53-68`:
+
+```typescript
+export interface IAuthedData {
+  obsName: string;
+  groupCode: string;
+  type: string;
+  timestamp: number;
+  data:
+    | IFormattedScoreboard
+    | IFormattedKillfeed
+    | IFormattedRoster
+    | IFormattedRoundInfo
+    | IFormattedScore
+    | IFormattedAuxiliary
+    | boolean
+    | string
+    | number;
+}
+```
+
+### Event Handling
+
+From `websocketIncoming.ts:249-258`:
+
+```typescript
+user.ws.on("obs_data", async (msg: any) => {
+  try {
+    const data = JSON.parse(msg.toString());
+    if (isAuthedData(data)) {
+      await this.matchController.receiveMatchData(data);
+    }
+  } catch (e) {
+    Log.error(`Error parsing obs_data: ${e}`);
+  }
+});
+```
+
+### Type Guard
+
+From `eventData.ts:187-197`:
+
+```typescript
+export function isAuthedData(data: object): data is IAuthedData | IAuthedAuxData {
+  if (
+    ("obsName" in data || "playerId" in data) &&
+    ("groupCode" in data || "matchId" in data) &&
+    "type" in data &&
+    "data" in data
+  ) {
+    return true;
+  }
+  return false;
+}
+```
+
+### Example obs_data Event
+
+```typescript
+socket.emit("obs_data", JSON.stringify({
+  obsName: "Observer 1",
+  groupCode: "MATCH123",
+  type: "scoreboard",
+  timestamp: Date.now(),
+  data: {
+    name: "Player1",
+    tagline: "TAG",
+    playerId: "player-uuid-1",
+    startTeam: 0,
+    agentInternal: "Jett",
+    isAlive: true,
+    initialArmor: 50,
+    scoreboardWeaponInternal: "Vandal",
+    currUltPoints: 6,
+    maxUltPoints: 7,
+    hasSpike: false,
+    money: 4000,
+    kills: 12,
+    deaths: 8,
+    assists: 3
+  }
+}));
+```
+
+## aux_data Event
+
+Auxiliary clients send player-specific data via `aux_data` events.
+
+### IAuthedAuxData Schema
+
+From `src/model/eventData.ts:125-131`:
+
+```typescript
+export interface IAuthedAuxData {
+  playerId: string;
+  matchId: string;
+  type: string;
+  timestamp: number;
+  data: IFormattedAuxiliary | number | boolean;
+}
+```
+
+### IFormattedAuxiliary Schema
+
+From `eventData.ts:106-123`:
+
+```typescript
+export interface IFormattedAuxiliary {
+  type:
+    | DataTypes.AUX_SCOREBOARD
+    | DataTypes.AUX_SCOREBOARD_TEAM
+    | DataTypes.AUX_ABILITIES
+    | DataTypes.AUX_HEALTH
+    | DataTypes.AUX_ASTRA_TARGETING
+    | DataTypes.AUX_CYPHER_CAM;
+  playerId: string;
+  matchId: string;
+  data:
+    | IFormattedScoreboard
+    | IFormattedAuxScoreboardTeam[]
+    | IFormattedAbilities
+    | number
+    | string
+    | boolean;
+}
+```
+
+### Event Handling
+
+From `websocketIncoming.ts:260-272`:
+
+```typescript
+user.ws.on("aux_data", async (msg: any) => {
+  try {
+    const data = JSON.parse(msg.toString());
+    if (isAuthedData(data)) {
+      await this.matchController.receiveMatchData(data);
+      if (data.type === DataTypes.AUX_SCOREBOARD && user.playerId === "") {
+        user.playerId = (data as IAuthedAuxData).playerId;
+      }
+    }
+  } catch (e) {
+    Log.error(`Error parsing aux_data: ${e}`);
+  }
+});
+```
+
+<Note>
+The server automatically extracts `playerId` from the first `AUX_SCOREBOARD` event if the auxiliary client didn't provide it during authentication.
+</Note>
+
+### Example aux_data Event
+
+```typescript
+socket.emit("aux_data", JSON.stringify({
+  playerId: "player-uuid-1",
+  matchId: "match-abc-123",
+  type: "aux_abilities",
+  timestamp: Date.now(),
+  data: {
+    type: "aux_abilities",
+    playerId: "player-uuid-1",
+    matchId: "match-abc-123",
+    data: {
+      grenade: 2,
+      ability_1: 1,
+      ability_2: 0
+    }
+  }
+}));
+```
+
+## match_data Event
+
+The server broadcasts `match_data` events to frontend clients on port 5200.
+
+See the [Outgoing Connection page](./outgoing-connection#match_data-event) for details on data filtering and emission.
+
+## Data Type Schemas
+
+### IFormattedScoreboard
+
+From `eventData.ts:5-21`:
+
+```typescript
+export interface IFormattedScoreboard {
+  name: string;
+  tagline: string;
+  playerId: string;
+  startTeam: number;
+  agentInternal: keyof typeof Agents;
+  isAlive: boolean;
+  initialArmor: number;
+  scoreboardWeaponInternal: keyof typeof WeaponsAndAbilities;
+  currUltPoints: number;
+  maxUltPoints: number;
+  hasSpike: boolean;
+  money: number;
+  kills: number;
+  deaths: number;
+  assists: number;
+}
+```
+
+**Used by:**
+- `obs_data` with `type: DataTypes.SCOREBOARD`
+- `aux_data` with `type: DataTypes.AUX_SCOREBOARD`
+
+### IFormattedKillfeed
+
+From `eventData.ts:23-30`:
+
+```typescript
+export interface IFormattedKillfeed {
+  attacker: string;
+  victim: string;
+  weaponKillfeedInternal: keyof typeof WeaponsAndAbilities;
+  headshotKill: boolean;
+  assists: string[];
+  isTeamkill: boolean;
+}
+```
+
+**Used by:**
+- `obs_data` with `type: DataTypes.KILLFEED`
+
+### IFormattedRoster
+
+From `eventData.ts:32-41`:
+
+```typescript
+export interface IFormattedRoster {
+  name: string;
+  tagline: string;
+  startTeam: number;
+  agentInternal: keyof typeof Agents;
+  playerId: string;
+  position: number;
+  locked: boolean;
+  rank: number;
+}
+```
+
+**Used by:**
+- `obs_data` with `type: DataTypes.ROSTER`
+
+### IFormattedRoundInfo
+
+From `eventData.ts:43-46`:
+
+```typescript
+export interface IFormattedRoundInfo {
+  roundPhase: string;
+  roundNumber: number;
+}
+```
+
+**Used by:**
+- `obs_data` with `type: DataTypes.ROUND_INFO`
+
+### IFormattedScore
+
+From `eventData.ts:48-51`:
+
+```typescript
+export interface IFormattedScore {
+  team_0: number;
+  team_1: number;
+}
+```
+
+**Used by:**
+- `obs_data` with `type: DataTypes.SCORE`
+
+### IFormattedAbilities
+
+From `eventData.ts:133-137`:
+
+```typescript
+export interface IFormattedAbilities {
+  grenade: number;
+  ability_1: number;
+  ability_2: number;
+}
+```
+
+**Used by:**
+- `aux_data` with `type: DataTypes.AUX_ABILITIES`
+
+### IFormattedAuxScoreboardTeam
+
+From `eventData.ts:139-152`:
+
+```typescript
+export interface IFormattedAuxScoreboardTeam {
+  playerId: string;
+  agentInternal: keyof typeof Agents;
+  isAlive: boolean;
+  initialArmor: number;
+  scoreboardWeaponInternal: keyof typeof WeaponsAndAbilities;
+  currUltPoints: number;
+  maxUltPoints: number;
+  hasSpike: boolean;
+  money: number;
+  kills: number;
+  deaths: number;
+  assists: number;
+}
+```
+
+**Used by:**
+- `aux_data` with `type: DataTypes.AUX_SCOREBOARD_TEAM`
+
+## Auxiliary Data Types
+
+Auxiliary clients send specialized data types:
+
+### AUX_SCOREBOARD
+
+Player's own scoreboard data.
+
+**Data type:** `IFormattedScoreboard`
+
+### AUX_SCOREBOARD_TEAM
+
+Team scoreboard data visible to the player.
+
+**Data type:** `IFormattedAuxScoreboardTeam[]`
+
+### AUX_ABILITIES
+
+Player's ability charges.
+
+**Data type:** `IFormattedAbilities`
+
+### AUX_HEALTH
+
+Player's current health.
+
+**Data type:** `number`
+
+### AUX_ASTRA_TARGETING
+
+Whether Astra is in targeting mode (astral form).
+
+**Data type:** `boolean`
+
+### AUX_CYPHER_CAM
+
+Whether Cypher is viewing their camera.
+
+**Data type:** `boolean`
+
+## Observer Data Types
+
+Observer clients send core match data:
+
+### SCOREBOARD
+
+Current player scoreboard state.
+
+**Data type:** `IFormattedScoreboard`
+
+### KILLFEED
+
+Kill events.
+
+**Data type:** `IFormattedKillfeed`
+
+### ROSTER
+
+Player roster and agent selection.
+
+**Data type:** `IFormattedRoster`
+
+### ROUND_INFO
+
+Round phase and number.
+
+**Data type:** `IFormattedRoundInfo`
+
+### SCORE
+
+Team scores.
+
+**Data type:** `IFormattedScore`
+
+### MAP
+
+Current map name.
+
+**Data type:** `string`
+
+### GAME_MODE
+
+Game mode (e.g., "Competitive", "Custom").
+
+**Data type:** `string`
+
+### OBSERVING
+
+Player being observed.
+
+**Data type:** `string` (player ID)
+
+### TEAM_IS_ATTACKER
+
+Whether the observed team is attacking.
+
+**Data type:** `boolean`
+
+### SPIKE_PLANTED
+
+Spike plant event.
+
+**Data type:** `boolean`
+
+### SPIKE_DETONATED
+
+Spike detonation event.
+
+**Data type:** `boolean`
+
+### SPIKE_DEFUSED
+
+Spike defuse event.
+
+**Data type:** `boolean`
+
+### MATCH_START
+
+Match start event.
+
+**Data type:** `boolean`
+
+## Hotkey Data Types
+
+Manual events triggered by hotkeys or UI:
+
+- **TECH_PAUSE**: Technical pause initiated
+- **LEFT_TIMEOUT**: Left team timeout
+- **RIGHT_TIMEOUT**: Right team timeout
+- **SWITCH_KDA_CREDITS**: Toggle between KDA and credits display
+
+**Data type:** `boolean`
+
+## Agents and Weapons
+
+The server uses internal VALORANT agent and weapon names:
+
+```typescript
+agentInternal: keyof typeof Agents;
+scoreboardWeaponInternal: keyof typeof WeaponsAndAbilities;
+weaponKillfeedInternal: keyof typeof WeaponsAndAbilities;
+```
+
+These are defined in `src/util/ValorantInternalTranslator.ts` (not shown in source files).
+
+<Note>
+Internal names are VALORANT's game file identifiers (e.g., `"Jett"`, `"Vandal"`, `"Grenade_Viper_C"`). The server translates these to display names when needed.
+</Note>
+
+## Complete Event Example
+
+### Observer Sending Scoreboard
+
+```typescript
+import { io } from "socket.io-client";
+
+const socket = io("wss://server:5100");
+
+// After authentication...
+
+socket.emit("obs_data", JSON.stringify({
+  obsName: "Observer 1",
+  groupCode: "MATCH123",
+  type: "scoreboard",
+  timestamp: Date.now(),
+  data: {
+    name: "TenZ",
+    tagline: "SEN",
+    playerId: "player-uuid-tenz",
+    startTeam: 0,
+    agentInternal: "Jett",
+    isAlive: true,
+    initialArmor: 50,
+    scoreboardWeaponInternal: "Rifle_AK_AutoSniper",
+    currUltPoints: 7,
+    maxUltPoints: 7,
+    hasSpike: false,
+    money: 5400,
+    kills: 24,
+    deaths: 12,
+    assists: 6
+  }
+}));
+```
+
+### Auxiliary Sending Abilities
+
+```typescript
+import { io } from "socket.io-client";
+
+const socket = io("wss://server:5100");
+
+// After authentication...
+
+socket.emit("aux_data", JSON.stringify({
+  playerId: "player-uuid-tenz",
+  matchId: "match-abc-123",
+  type: "aux_abilities",
+  timestamp: Date.now(),
+  data: {
+    type: "aux_abilities",
+    playerId: "player-uuid-tenz",
+    matchId: "match-abc-123",
+    data: {
+      grenade: 1, // Jett smoke
+      ability_1: 2, // Updraft charges
+      ability_2: 1 // Tailwind dash
+    }
+  }
+}));
+```
+
+### Frontend Receiving match_data
+
+```typescript
+import { io } from "socket.io-client";
+
+const socket = io("wss://server:5200");
+
+socket.on("match_data", (msg) => {
+  const matchData = JSON.parse(msg);
+  
+  console.log("Match ID:", matchData.matchId);
+  console.log("Group Code:", matchData.groupCode);
+  console.log("Map:", matchData.map);
+  console.log("Score:", matchData.score); // { team_0: 7, team_1: 5 }
+  console.log("Round:", matchData.roundInfo); // { roundPhase: "Shopping", roundNumber: 13 }
+  
+  // Display scoreboard
+  matchData.scoreboard.forEach(player => {
+    console.log(`${player.name}#${player.tagline}: ${player.kills}/${player.deaths}/${player.assists}`);
+  });
+  
+  // Display latest killfeed event
+  if (matchData.killfeed.length > 0) {
+    const kill = matchData.killfeed[0];
+    console.log(`${kill.attacker} killed ${kill.victim} with ${kill.weaponKillfeedInternal}`);
+  }
+});
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Incoming Connection" icon="arrow-down-to-bracket" href="./incoming-connection">
+    Learn how to send obs_data and aux_data events
+  </Card>
+  <Card title="Outgoing Connection" icon="arrow-up-from-bracket" href="./outgoing-connection">
+    Learn how to receive match_data events
+  </Card>
+</CardGroup>

@@ -1,0 +1,527 @@
+---
+title: 'Event Data Types'
+description: 'Event interfaces and data structures for match data streaming'
+---
+
+## Overview
+
+The event data system defines all data structures used to communicate match state between clients (observer, auxiliary) and the server. Events are strongly typed using TypeScript interfaces and discriminated by the `DataTypes` enum.
+
+## DataTypes Enum
+
+```typescript
+export enum DataTypes {
+  // Observer Data
+  SCOREBOARD = "scoreboard",
+  KILLFEED = "killfeed",
+  ROSTER = "roster",
+  MATCH_START = "match_start",
+  ROUND_INFO = "round_info",
+  TEAM_IS_ATTACKER = "team_is_attacker",
+  SCORE = "score",
+  GAME_MODE = "game_mode",
+  MAP = "map",
+  OBSERVING = "observing",
+  SPIKE_DETONATED = "spike_detonated",
+  SPIKE_DEFUSED = "spike_defused",
+  
+  // Authentication
+  AUTH = "authenticate",
+  AUX_AUTH = "aux_authenticate",
+  
+  // Auxiliary Data
+  AUX_ABILITIES = "aux_abilities",
+  AUX_HEALTH = "aux_health",
+  AUX_SCOREBOARD = "aux_scoreboard",
+  AUX_SCOREBOARD_TEAM = "aux_scoreboard_team",
+  AUX_ASTRA_TARGETING = "aux_astra_targeting",
+  AUX_CYPHER_CAM = "aux_cypher_cam",
+  
+  // Hotkey Events
+  SPIKE_PLANTED = "spike_planted",
+  TECH_PAUSE = "tech_pause",
+  LEFT_TIMEOUT = "left_timeout",
+  RIGHT_TIMEOUT = "right_timeout",
+  SWITCH_KDA_CREDITS = "switch_kda_credits",
+  
+  // Preview
+  PREVIEW = "preview",
+}
+```
+
+## Observer Event Interfaces
+
+### IFormattedScoreboard
+
+```typescript
+export interface IFormattedScoreboard {
+  name: string;
+  tagline: string;
+  playerId: string;
+  startTeam: number;  // 0 or 1
+  agentInternal: keyof typeof Agents;
+  isAlive: boolean;
+  initialArmor: number;  // 0, 1, or 2
+  scoreboardWeaponInternal: keyof typeof WeaponsAndAbilities;
+  currUltPoints: number;
+  maxUltPoints: number;
+  hasSpike: boolean;
+  money: number;
+  kills: number;
+  deaths: number;
+  assists: number;
+}
+```
+
+Sent when the observer client detects scoreboard updates.
+
+<ResponseField name="name" type="string">
+  Player's display name.
+</ResponseField>
+
+<ResponseField name="tagline" type="string">
+  Riot ID tagline.
+</ResponseField>
+
+<ResponseField name="playerId" type="string">
+  Player's unique identifier (PUUID).
+</ResponseField>
+
+<ResponseField name="startTeam" type="number">
+  Team ID (0 = attackers at start, 1 = defenders at start).
+</ResponseField>
+
+<ResponseField name="agentInternal" type="string">
+  Internal agent identifier (e.g., "Clay_PC_C" for Raze).
+</ResponseField>
+
+<ResponseField name="isAlive" type="boolean">
+  Whether the player is currently alive.
+</ResponseField>
+
+<ResponseField name="initialArmor" type="number">
+  Armor type: 0 = none, 1 = light (25 HP), 2 = heavy (50 HP).
+</ResponseField>
+
+<ResponseField name="scoreboardWeaponInternal" type="string">
+  Internal weapon identifier for the best weapon held.
+</ResponseField>
+
+<ResponseField name="currUltPoints" type="number">
+  Current ultimate points.
+</ResponseField>
+
+<ResponseField name="maxUltPoints" type="number">
+  Ultimate points required for this agent.
+</ResponseField>
+
+<ResponseField name="hasSpike" type="boolean">
+  Whether this player is carrying the spike.
+</ResponseField>
+
+<ResponseField name="money" type="number">
+  Current credits.
+</ResponseField>
+
+<ResponseField name="kills" type="number">
+  Total kills.
+</ResponseField>
+
+<ResponseField name="deaths" type="number">
+  Total deaths.
+</ResponseField>
+
+<ResponseField name="assists" type="number">
+  Total assists.
+</ResponseField>
+
+### IFormattedKillfeed
+
+```typescript
+export interface IFormattedKillfeed {
+  attacker: string;
+  victim: string;
+  weaponKillfeedInternal: keyof typeof WeaponsAndAbilities;
+  headshotKill: boolean;
+  assists: string[];  // Array of assisting agent internal names
+  isTeamkill: boolean;
+}
+```
+
+Sent when a kill appears in the killfeed.
+
+<ResponseField name="attacker" type="string">
+  Name of the player who got the kill.
+</ResponseField>
+
+<ResponseField name="victim" type="string">
+  Name of the player who died.
+</ResponseField>
+
+<ResponseField name="weaponKillfeedInternal" type="string">
+  Internal weapon/ability identifier used for the kill.
+</ResponseField>
+
+<ResponseField name="headshotKill" type="boolean">
+  Whether the kill was a headshot.
+</ResponseField>
+
+<ResponseField name="assists" type="string[]">
+  Array of internal agent names that assisted (e.g., ["Jett_PC_C"]).
+</ResponseField>
+
+<ResponseField name="isTeamkill" type="boolean">
+  Whether this was a friendly fire kill.
+</ResponseField>
+
+### IFormattedRoster
+
+```typescript
+export interface IFormattedRoster {
+  name: string;
+  tagline: string;
+  startTeam: number;
+  agentInternal: keyof typeof Agents;
+  playerId: string;
+  position: number;  // 0-4
+  locked: boolean;
+  rank: number;
+}
+```
+
+Sent during agent select and when player data updates.
+
+<ResponseField name="position" type="number">
+  Player's position in team roster (0-4).
+</ResponseField>
+
+<ResponseField name="locked" type="boolean">
+  Whether the agent selection is locked.
+</ResponseField>
+
+<ResponseField name="rank" type="number">
+  Player's competitive rank tier.
+</ResponseField>
+
+### IFormattedRoundInfo
+
+```typescript
+export interface IFormattedRoundInfo {
+  roundPhase: string;
+  roundNumber: number;
+}
+```
+
+<ResponseField name="roundPhase" type="string">
+  Current phase: "LOBBY", "shopping", "combat", "end", "game_end".
+</ResponseField>
+
+<ResponseField name="roundNumber" type="number">
+  Current round (1-indexed).
+</ResponseField>
+
+### IFormattedScore
+
+```typescript
+export interface IFormattedScore {
+  team_0: number;
+  team_1: number;
+}
+```
+
+<ResponseField name="team_0" type="number">
+  Rounds won by team 0 (attackers at start).
+</ResponseField>
+
+<ResponseField name="team_1" type="number">
+  Rounds won by team 1 (defenders at start).
+</ResponseField>
+
+## Authentication Interfaces
+
+### IAuthenticationData
+
+```typescript
+export interface IAuthenticationData {
+  type: DataTypes.AUTH;
+  clientVersion: string;
+  obsName: string;
+  key: string;
+  groupCode: string;
+  groupSecret?: string;
+  leftTeam: AuthTeam;
+  rightTeam: AuthTeam;
+  toolsData: ToolsData;
+  organizationId?: string;  // Added by server
+  isSupporter?: boolean;    // Added by server
+}
+```
+
+Sent by the observer client to initialize a match.
+
+<ResponseField name="clientVersion" type="string">
+  Version of the observer client.
+</ResponseField>
+
+<ResponseField name="obsName" type="string">
+  Observer's display name.
+</ResponseField>
+
+<ResponseField name="key" type="string">
+  Authentication key for the organization.
+</ResponseField>
+
+<ResponseField name="groupCode" type="string">
+  Unique code for this match session.
+</ResponseField>
+
+<ResponseField name="groupSecret" type="string" optional>
+  Secret for reconnecting to existing match.
+</ResponseField>
+
+<ResponseField name="leftTeam" type="AuthTeam">
+  Configuration for the left team.
+  
+  ```typescript
+  {
+    name: string;
+    tricode: string;
+    url: string;  // Logo URL
+    attackStart: boolean;
+  }
+  ```
+</ResponseField>
+
+<ResponseField name="rightTeam" type="AuthTeam">
+  Configuration for the right team (same structure as `leftTeam`).
+</ResponseField>
+
+<ResponseField name="toolsData" type="ToolsData">
+  Tournament info, sponsors, timeouts, and display settings.
+</ResponseField>
+
+### IAuxAuthenticationData
+
+```typescript
+export interface IAuxAuthenticationData {
+  type: DataTypes.AUX_AUTH;
+  clientVersion: string;
+  name: string;
+  matchId: string;
+  playerId: string;
+}
+```
+
+Sent by auxiliary (player) clients to connect to a match.
+
+<ResponseField name="name" type="string">
+  Player's display name.
+</ResponseField>
+
+<ResponseField name="matchId" type="string">
+  The match ID to join.
+</ResponseField>
+
+<ResponseField name="playerId" type="string">
+  Player's PUUID.
+</ResponseField>
+
+## Auxiliary Event Interfaces
+
+### IFormattedAuxiliary
+
+```typescript
+export interface IFormattedAuxiliary {
+  type: DataTypes.AUX_SCOREBOARD
+    | DataTypes.AUX_SCOREBOARD_TEAM
+    | DataTypes.AUX_ABILITIES
+    | DataTypes.AUX_HEALTH
+    | DataTypes.AUX_ASTRA_TARGETING
+    | DataTypes.AUX_CYPHER_CAM;
+  playerId: string;
+  matchId: string;
+  data: IFormattedScoreboard
+    | IFormattedAuxScoreboardTeam[]
+    | IFormattedAbilities
+    | number
+    | string
+    | boolean;
+}
+```
+
+Base structure for auxiliary client events.
+
+### IFormattedAuxScoreboardTeam
+
+```typescript
+export interface IFormattedAuxScoreboardTeam {
+  playerId: string;
+  agentInternal: keyof typeof Agents;
+  isAlive: boolean;
+  initialArmor: number;
+  scoreboardWeaponInternal: keyof typeof WeaponsAndAbilities;
+  currUltPoints: number;
+  maxUltPoints: number;
+  hasSpike: boolean;
+  money: number;
+  kills: number;
+  deaths: number;
+  assists: number;
+}
+```
+
+Scoreboard data for team members (sent as array from auxiliary client).
+
+### IFormattedAbilities
+
+```typescript
+export interface IFormattedAbilities {
+  grenade: number;    // Q ability charges
+  ability_1: number;  // E ability charges
+  ability_2: number;  // C ability charges
+}
+```
+
+Ability charge counts from auxiliary client.
+
+## Authenticated Event Wrappers
+
+### IAuthedData
+
+```typescript
+export interface IAuthedData {
+  obsName: string;
+  groupCode: string;
+  type: string;
+  timestamp: number;
+  data: IFormattedScoreboard
+    | IFormattedKillfeed
+    | IFormattedRoster
+    | IFormattedRoundInfo
+    | IFormattedScore
+    | IFormattedAuxiliary
+    | boolean
+    | string
+    | number;
+}
+```
+
+Wrapper for all observer events after authentication.
+
+<ResponseField name="obsName" type="string">
+  Observer client identifier.
+</ResponseField>
+
+<ResponseField name="groupCode" type="string">
+  Match session code.
+</ResponseField>
+
+<ResponseField name="type" type="string">
+  Event type from `DataTypes` enum.
+</ResponseField>
+
+<ResponseField name="timestamp" type="number">
+  Unix timestamp in milliseconds.
+</ResponseField>
+
+<ResponseField name="data" type="union">
+  Event payload (type depends on `type` field).
+</ResponseField>
+
+### IAuthedAuxData
+
+```typescript
+export interface IAuthedAuxData {
+  playerId: string;
+  matchId: string;
+  type: string;
+  timestamp: number;
+  data: IFormattedAuxiliary | number | boolean;
+}
+```
+
+Wrapper for all auxiliary client events.
+
+<ResponseField name="playerId" type="string">
+  Player's PUUID.
+</ResponseField>
+
+<ResponseField name="matchId" type="string">
+  Match identifier.
+</ResponseField>
+
+## Type Guard
+
+```typescript
+export function isAuthedData(data: object): data is IAuthedData | IAuthedAuxData
+```
+
+Type guard to check if an object is authenticated event data.
+
+## Example Event Flow
+
+```typescript
+// 1. Observer authenticates
+const authEvent: IAuthenticationData = {
+  type: DataTypes.AUTH,
+  clientVersion: "1.0.0",
+  obsName: "Observer1",
+  key: "org-api-key",
+  groupCode: "MATCH123",
+  leftTeam: { name: "Team A", tricode: "TMA", url: "", attackStart: true },
+  rightTeam: { name: "Team B", tricode: "TMB", url: "", attackStart: false },
+  toolsData: new ToolsData()
+};
+
+// 2. Match starts
+const matchStartEvent: IAuthedData = {
+  obsName: "Observer1",
+  groupCode: "MATCH123",
+  type: DataTypes.MATCH_START,
+  timestamp: Date.now(),
+  data: "match-uuid-456"
+};
+
+// 3. Scoreboard update
+const scoreboardEvent: IAuthedData = {
+  obsName: "Observer1",
+  groupCode: "MATCH123",
+  type: DataTypes.SCOREBOARD,
+  timestamp: Date.now(),
+  data: {
+    name: "Player1",
+    tagline: "NA1",
+    playerId: "player-uuid-1",
+    startTeam: 0,
+    agentInternal: "Jett_PC_C",
+    isAlive: true,
+    initialArmor: 2,
+    scoreboardWeaponInternal: "vandal",
+    currUltPoints: 5,
+    maxUltPoints: 7,
+    hasSpike: false,
+    money: 3200,
+    kills: 10,
+    deaths: 7,
+    assists: 4
+  }
+};
+
+// 4. Auxiliary client sends abilities
+const abilitiesEvent: IAuthedAuxData = {
+  playerId: "player-uuid-1",
+  matchId: "match-uuid-456",
+  type: DataTypes.AUX_ABILITIES,
+  timestamp: Date.now(),
+  data: {
+    type: DataTypes.AUX_ABILITIES,
+    playerId: "player-uuid-1",
+    matchId: "match-uuid-456",
+    data: {
+      grenade: 1,
+      ability_1: 2,
+      ability_2: 1
+    }
+  }
+};
+```

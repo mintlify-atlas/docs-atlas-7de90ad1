@@ -1,0 +1,933 @@
+---
+title: System Components
+description: Deep dive into the major components that power Spectra Server
+---
+
+## Component Architecture
+
+Spectra Server is built from several interconnected components, each with specific responsibilities. This page provides implementation details for each major component.
+
+## WebsocketIncoming (Port 5100)
+
+The ingestion layer that receives data from observer and auxiliary clients.
+
+**Location**: `src/connector/websocketIncoming.ts`
+
+### Responsibilities
+
+- Accept WebSocket connections from clients
+- Authenticate observer clients (`obs_logon` event)
+- Authenticate auxiliary clients (`aux_logon` event)
+- Route authenticated data to MatchController
+- Manage client lifecycle and disconnection
+
+### Key Implementation Details
+
+#### Server Initialization
+
+```typescript
+const serverInstance = process.env.INSECURE == "true" 
+  ? createInsecureServer()
+  : createServer({ key: readFileSync(process.env.SERVER_KEY!), 
+                   cert: readFileSync(process.env.SERVER_CERT!) });
+
+this.wss = new Server(serverInstance, {
+  perMessageDeflate: {
+    zlibDeflateOptions: { chunkSize: 1024, memLevel: 7, level: 3 },
+    zlibInflateOptions: { chunkSize: 10 * 1024 },
+    threshold: 1024
+  },
+  cors: { origin: "*" }
+});
+
+serverInstance.listen(5100);
+```
+
+<Note>
+**Compression Settings**: The `perMessageDeflate` configuration balances compression ratio with CPU usage. Level 3 compression provides good bandwidth savings without excessive CPU overhead.
+</Note>
+
+#### Observer Authentication Flow
+
+The `obs_logon` event handler (src/connector/websocketIncoming.ts:66) performs these validations:
+
+<Steps>
+  <Step title="Duplicate Check">
+    Prevents the same socket from authenticating twice:
+    
+    ```typescript
+    if (WebsocketIncoming.authedClients.find(
+      (client) => client.ws.id === ws.id
+    ) != undefined) return;
+    ```
+  </Step>
+  
+  <Step title="Packet Type Validation">
+    Ensures packet type is `DataTypes.AUTH`:
+    
+    ```typescript
+    if (authenticationData.type !== DataTypes.AUTH) {
+      ws.emit('obs_logon_ack', JSON.stringify({
+        type: DataTypes.AUTH, 
+        value: false, 
+        reason: 'Invalid packet.'
+      }));
+      ws.disconnect();
+      return;
+    }
+    ```
+  </Step>
+  
+  <Step title="Version Compatibility">
+    Checks client version against server compatibility list:
+    
+    ```typescript
+    if (!isCompatibleVersion(authenticationData.clientVersion)) {
+      ws.emit('obs_logon_ack', JSON.stringify({
+        type: DataTypes.AUTH,
+        value: false,
+        reason: `Client version ${authenticationData.clientVersion} is not compatible`
+      }));
+      ws.disconnect();
+      return;
+    }
+    ```
+  </Step>
+  
+  <Step title="Key Validation">
+    Validates access key via `isValidKey()` method:
+    
+    ```typescript
+    const validity = await this.isValidKey(authenticationData.key);
+    if (validity.valid === false) {
+      ws.emit('obs_logon_ack', JSON.stringify({
+        type: DataTypes.AUTH, 
+        value: false, 
+        reason: validity.reason
+      }));
+      ws.disconnect();
+      return;
+    }
+    
+    // Attach organization ID and supporter status
+    if (validity.organizationId) {
+      authenticationData.organizationId = validity.organizationId;
+    }
+    authenticationData.isSupporter = validity.isSupporter;
+    ```
+  </Step>
+  
+  <Step title="Match Creation">
+    Attempts to create or reconnect to match:
+    
+    ```typescript
+    const groupSecret = await this.matchController.createMatch(authenticationData);
+    if (!groupSecret || groupSecret === "") {
+      ws.emit('obs_logon_ack', JSON.stringify({
+        type: DataTypes.AUTH,
+        value: false,
+        reason: `Game with Group Code ${authenticationData.groupCode} exists and is still live.`
+      }));
+      ws.disconnect();
+      return;
+    }
+    ```
+  </Step>
+  
+  <Step title="Success Response">
+    Sends acknowledgment and registers client:
+    
+    ```typescript
+    ws.emit('obs_logon_ack', JSON.stringify({
+      type: DataTypes.AUTH, 
+      value: true, 
+      reason: groupSecret
+    }));
+    
+    user.name = authenticationData.obsName;
+    user.groupCode = authenticationData.groupCode;
+    WebsocketIncoming.authedClients.push(user);
+    
+    this.onAuthSuccess(user);
+    ```
+  </Step>
+</Steps>
+
+#### Auxiliary Authentication Flow
+
+Auxiliary clients use a simpler flow via `aux_logon` (src/connector/websocketIncoming.ts:158):
+
+- No access key validation (relies on match ID security)
+- Finds existing match by `matchId` instead of group code
+- Stores `playerId` for player-specific data routing
+- Sets `user.isAuxiliary = true` flag
+
+```typescript
+const groupCode = this.matchController.findMatch(authenticationData.matchId);
+if (groupCode == null) {
+  ws.emit('aux_logon_ack', JSON.stringify({
+    type: DataTypes.AUTH,
+    value: false,
+    reason: `Game with Match ID ${authenticationData.matchId} not found.`
+  }));
+  ws.disconnect();
+  return;
+}
+```
+
+<Info>
+**Security Note**: Auxiliary clients can only connect if a match with their `matchId` already exists, created by an authenticated observer. This prevents unauthorized aux connections.
+</Info>
+
+#### Key Validation Logic
+
+The `isValidKey()` method (src/connector/websocketIncoming.ts:275) implements a fallback chain:
+
+```typescript
+public async isValidKey(key: string): Promise<KeyValidity> {
+  // 1. Check if authentication is disabled
+  if (process.env.REQUIRE_AUTH_KEY === "false")
+    return { valid: true, reason: ValidityReasons.VALID };
+
+  // 2. Check against local AUTH_KEY
+  if (process.env.AUTH_KEY === key) 
+    return { valid: true, reason: ValidityReasons.VALID };
+
+  // 3. Check backend (if enabled)
+  let validity: KeyValidity = { valid: false, reason: ValidityReasons.INVALID };
+  if (process.env.USE_BACKEND === "true") {
+    validity = await DatabaseConnector.verifyAccessKey(key);
+  }
+
+  return validity;
+}
+```
+
+#### Disconnection Handling
+
+The disconnect handler (src/connector/websocketIncoming.ts:229) cleans up auxiliary clients:
+
+```typescript
+ws.on("disconnect", () => {
+  const index = WebsocketIncoming.authedClients.findIndex(
+    (client) => client.ws.id === ws.id
+  );
+  if (index != -1) {
+    const client = WebsocketIncoming.authedClients[index];
+    if (client.playerId !== "") {
+      this.matchController.setAuxDisconnected(client.groupCode, client.playerId);
+    }
+    if (client.isAuxiliary) {
+      WebsocketIncoming.authedClients.splice(index, 1);
+    }
+  }
+});
+```
+
+<Note>
+**Observer Persistence**: Observer clients remain in `authedClients` even after disconnection to preserve match state. Only auxiliary clients are removed immediately.
+</Note>
+
+### Static Methods
+
+#### `disconnectGroupCode(groupCode: string)`
+
+Disconnects all clients associated with a group code (src/connector/websocketIncoming.ts:289):
+
+```typescript
+public static disconnectGroupCode(groupCode: string) {
+  for (const client of WebsocketIncoming.authedClients) {
+    if (client.groupCode === groupCode) {
+      client.ws.disconnect();
+    }
+  }
+}
+```
+
+Called by `MatchController` when removing a match.
+
+---
+
+## WebsocketOutgoing (Port 5200)
+
+The broadcast layer that sends processed game state to frontends.
+
+**Location**: `src/connector/websocketOutgoing.ts`
+
+### Responsibilities
+
+- Accept WebSocket connections from frontends
+- Manage room-based subscriptions by group code
+- Broadcast match data to subscribed clients
+- Filter sensitive data before transmission
+
+### Key Implementation Details
+
+#### Singleton Pattern
+
+```typescript
+private static instance: WebsocketOutgoing;
+
+public static getInstance(): WebsocketOutgoing {
+  if (WebsocketOutgoing.instance == null) 
+    WebsocketOutgoing.instance = new WebsocketOutgoing();
+  return WebsocketOutgoing.instance;
+}
+```
+
+Ensures only one broadcast server exists across the application.
+
+#### Frontend Logon Handler
+
+Simple room-based subscription (src/connector/websocketOutgoing.ts:59):
+
+```typescript
+ws.once("logon", (msg: string) => {
+  const json = JSON.parse(msg);
+  ws.join(json.groupCode);  // Join Socket.IO room
+  
+  ws.emit('logon_success', JSON.stringify({
+    groupCode: json.groupCode,
+    msg: `Logon succeeded for group code ${json.groupCode}`
+  }));
+  
+  // Send initial match state
+  MatchController.getInstance().sendMatchDataForLogon(json.groupCode);
+});
+```
+
+<Info>
+**Room-Based Broadcasting**: Socket.IO rooms enable efficient one-to-many broadcasting. When data is sent to a room, only sockets in that room receive it.
+</Info>
+
+#### Data Broadcasting Method
+
+The `sendMatchData()` method (src/connector/websocketOutgoing.ts:87) filters sensitive fields:
+
+```typescript
+sendMatchData(groupCode: string, data: any) {
+  const {
+    replayLog,
+    eventNumber,
+    groupSecret,
+    playercamUrl,
+    timeoutEndTimeout,
+    timeoutRemainingLoop,
+    ...formattedData
+  } = data;
+
+  const deepMod: any = structuredClone(formattedData);
+  
+  // Remove playercam secrets
+  if (deepMod.tools?.playercamsInfo && 
+      typeof deepMod.tools.playercamsInfo === "object") {
+    delete deepMod.tools.playercamsInfo.secret;
+    delete deepMod.tools.playercamsInfo.endTime;
+  }
+
+  // Broadcast to room
+  this.wss.to(groupCode).emit('match_data', JSON.stringify(deepMod));
+}
+```
+
+**Filtered Fields**:
+- `replayLog`: Internal event history for replay generation
+- `eventNumber`: Internal change tracking counter
+- `groupSecret`: Reconnection authentication token
+- `playercamUrl`: Private playercam configuration
+- `timeoutEndTimeout` / `timeoutRemainingLoop`: Internal Node.js timers
+- `tools.playercamsInfo.secret`: Playercam API secret
+- `tools.playercamsInfo.endTime`: Playercam session expiry
+
+---
+
+## MatchController
+
+The orchestration layer that manages match lifecycles and coordinates data flow.
+
+**Location**: `src/controller/MatchController.ts`
+
+### Responsibilities
+
+- Create and register match instances
+- Route incoming data to correct match
+- Manage outgoing broadcast loop
+- Clean up inactive matches
+- Track team information for group codes
+
+### Key Implementation Details
+
+#### Singleton with State
+
+```typescript
+private static instance: MatchController;
+private outgoingWebsocketServer: WebsocketOutgoing = WebsocketOutgoing.getInstance();
+private sendInterval: NodeJS.Timeout | null = null;
+
+private matches: Record<string, Match> = {};
+private eventNumbers: Record<string, number> = {};
+private eventTimes: Record<string, number> = {};
+
+private codeToTeamInfo: Record<string, { leftTeam: AuthTeam; rightTeam: AuthTeam }> = {};
+private teamInfoExpiry: Record<string, number> = {};
+```
+
+**State Tracking**:
+- `matches`: Active match instances indexed by group code
+- `eventNumbers`: Last broadcast event number per match
+- `eventTimes`: Last event timestamp for timeout detection
+- `codeToTeamInfo`: Team metadata for preview/UI purposes
+- `teamInfoExpiry`: 12-hour expiry for team info cleanup
+
+#### Match Creation
+
+The `createMatch()` method (src/controller/MatchController.ts:42) handles match creation and reconnection:
+
+```typescript
+async createMatch(data: IAuthenticationData) {
+  const existingMatch = this.matches[data.groupCode];
+  
+  // Handle reconnection
+  if (existingMatch != null) {
+    if (data.groupSecret !== existingMatch.groupSecret) {
+      // Wrong secret - reject
+      return "";
+    }
+    // Correct secret - reconnect
+    return "reconnected";
+  }
+  
+  // Create new match
+  const newMatch = new Match(data);
+  this.matches[data.groupCode] = newMatch;
+  this.eventNumbers[data.groupCode] = 0;
+  
+  // Store team info with expiry
+  this.codeToTeamInfo[data.groupCode] = { 
+    leftTeam: data.leftTeam, 
+    rightTeam: data.rightTeam 
+  };
+  this.teamInfoExpiry[data.groupCode] = Date.now() + 1000 * 60 * 60; // 1 hour
+  
+  // Start broadcast loop if not running
+  this.startOutgoingSendLoop();
+  
+  return newMatch.groupSecret;
+}
+```
+
+<Info>
+**Reconnection Security**: The `groupSecret` acts as a password for reconnection. Only clients with the correct secret can reconnect to an existing match.
+</Info>
+
+#### Broadcast Send Loop
+
+The core broadcast mechanism (src/controller/MatchController.ts:154):
+
+```typescript
+private startOutgoingSendLoop() {
+  if (this.sendInterval != null) return;  // Already running
+  
+  this.sendInterval = setInterval(async () => {
+    for (const groupCode in this.matches) {
+      // Check if match has new events
+      if (this.matches[groupCode].eventNumber > this.eventNumbers[groupCode]) {
+        // Broadcast updated state
+        this.outgoingWebsocketServer.sendMatchData(
+          groupCode, 
+          this.matches[groupCode]
+        );
+        
+        // Update tracking
+        this.eventNumbers[groupCode] = this.matches[groupCode].eventNumber;
+        this.eventTimes[groupCode] = Date.now();
+      } else {
+        // Check for 30-minute timeout
+        if (Date.now() - this.eventTimes[groupCode] > 1000 * 60 * 30) {
+          // Complete match in backend if registered
+          if (this.matches[groupCode].isRegistered) {
+            await DatabaseConnector.completeMatch(this.matches[groupCode]);
+          }
+          this.removeMatch(groupCode);
+        }
+      }
+    }
+  }, 100);  // 100ms interval = 10 Hz max
+}
+```
+
+**Performance Characteristics**:
+- **100ms interval**: Limits broadcast rate to 10 Hz
+- **Event-driven**: Only sends when `eventNumber` changes
+- **Timeout cleanup**: Removes matches inactive for 30 minutes
+- **Sequential processing**: Processes all matches in order
+
+<Note>
+**Scalability Consideration**: With many concurrent matches, the send loop processes them sequentially. If processing takes >100ms, broadcasts may be delayed. Monitor performance in high-load scenarios.
+</Note>
+
+#### Match Removal
+
+The `removeMatch()` method (src/controller/MatchController.ts:78) performs cleanup:
+
+```typescript
+removeMatch(groupCode: string) {
+  if (this.matches[groupCode] != null) {
+    delete this.matches[groupCode];
+    delete this.eventNumbers[groupCode];
+    
+    // Disconnect all clients
+    WebsocketIncoming.disconnectGroupCode(groupCode);
+    
+    // Stop send loop if no matches remain
+    if (Object.keys(this.matches).length == 0 && this.sendInterval != null) {
+      clearInterval(this.sendInterval);
+      this.sendInterval = null;
+    }
+  }
+}
+```
+
+#### Data Routing
+
+The `receiveMatchData()` method (src/controller/MatchController.ts:96) routes data:
+
+```typescript
+async receiveMatchData(data: IAuthedData | IAuthedAuxData) {
+  data.timestamp = Date.now();
+
+  // Observer data (has groupCode)
+  if ("groupCode" in data) {
+    const trackedMatch = this.matches[data.groupCode];
+    if (trackedMatch == null) return;
+    await trackedMatch.receiveMatchSpecificData(data);
+  } 
+  // Auxiliary data (has matchId)
+  else if ("matchId" in data) {
+    for (const match of Object.values(this.matches)) {
+      if (match.matchId == data.matchId) {
+        await match.receiveMatchSpecificData(data);
+      }
+    }
+  }
+}
+```
+
+<Info>
+**Multi-Match Auxiliary**: Auxiliary data is sent to **all matches** with the matching `matchId`. This supports tournament servers running multiple games simultaneously.
+</Info>
+
+---
+
+## REST API Server (Port 5101)
+
+HTTP endpoint server for status checks, previews, and metadata queries.
+
+**Location**: `src/index.ts`
+
+### Endpoints
+
+#### `GET /status`
+
+Returns server health and active match count:
+
+```typescript
+app.get("/status", (req: Request, res: Response) => {
+  const status = { 
+    status: "UP", 
+    matchesRunning: MatchController.getInstance().getMatchCount() 
+  };
+  res.header("Access-Control-Allow-Origin", "*").json(status);
+});
+```
+
+**Response**:
+```json
+{
+  "status": "UP",
+  "matchesRunning": 3
+}
+```
+
+#### `PUT /createPreview`
+
+Creates a preview match for overlay testing (src/index.ts:27):
+
+```typescript
+app.put("/createPreview", async (req: Request, res: Response) => {
+  await previewHandler.handlePreviewCreation(req, res);
+});
+```
+
+Validates access key and creates a `PreviewMatch` instance with a 6-character code.
+
+#### `GET /preview/:previewCode`
+
+Retrieves preview match data (src/index.ts:31):
+
+```typescript
+app.get("/preview/:previewCode", async (req: Request, res: Response) => {
+  const previewCode = req.params.previewCode;
+  if (!previewCode || previewCode.length !== 6) {
+    return res.status(400).json({ error: "Invalid preview code format" });
+  }
+  
+  const previewMatch = previewHandler.getPreview(previewCode);
+  if (!previewMatch) {
+    return res.status(404).json({ error: "Preview not found" });
+  }
+  
+  res.status(200).json(previewMatch);
+});
+```
+
+#### `GET /getOrgForKey`
+
+Validates an access key and returns organization info (src/index.ts:44):
+
+```typescript
+app.get("/getOrgForKey", async (req, res) => {
+  const key = req.query.key;
+  if (!key || typeof key !== "string") {
+    res.status(400).json({ error: "Key is required" });
+    return;
+  }
+
+  if (process.env.USE_BACKEND === "true") {
+    const validity = await DatabaseConnector.verifyAccessKey(key);
+    if (validity.valid) {
+      res.status(200).json({
+        id: validity.organizationId,
+        name: validity.organizationName,
+        isSupporter: validity.isSupporter,
+      });
+      return;
+    }
+  }
+
+  res.status(401).send("401 Unauthorized");
+});
+```
+
+#### `GET /getTeamInfoForCode`
+
+Returns team metadata for a group code (src/index.ts:66):
+
+```typescript
+app.get("/getTeamInfoForCode", async (req, res) => {
+  const groupCode = req.query.groupCode;
+  const teamInfo = MatchController.getInstance().getTeamInfoForCode(groupCode);
+  
+  if (teamInfo) {
+    res.status(200).json(teamInfo);
+  } else {
+    res.status(404).json({ error: "Group code not found" });
+  }
+});
+```
+
+**Response**:
+```json
+{
+  "leftTeam": { "name": "Team A", "tricode": "TMA", ... },
+  "rightTeam": { "name": "Team B", "tricode": "TMB", ... }
+}
+```
+
+#### Backend-Only Endpoints
+
+When `USE_BACKEND=true`, additional endpoints are available:
+
+- `GET /getSupportPackages`: Lists available support packages
+- `GET /client/oauth-callback`: Handles Discord OAuth for supporter linking
+
+---
+
+## DatabaseConnector
+
+Backend integration layer for key validation, match registration, and statistics.
+
+**Location**: `src/connector/databaseConnector.ts`
+
+### Responsibilities
+
+- Validate access keys against backend API
+- Register matches when they start
+- Update match state at round boundaries
+- Complete matches when they end
+- Fetch playercam and name override data
+- Trigger stats collection (supporters only)
+
+### Key Methods
+
+#### `verifyAccessKey(key: string)`
+
+Validates an access key (src/connector/databaseConnector.ts:22):
+
+```typescript
+public static async verifyAccessKey(key: string): Promise<KeyValidity> {
+  const res = await this.apiRequest(`system/validateAccessKey/${key}`, "get");
+  
+  if (res.status == 200) {
+    const data = await res.json();
+    const isSupporter = await this.checkIsSupporter(data.id);
+    return {
+      valid: true,
+      reason: ValidityReasons.VALID,
+      organizationId: data.id,
+      organizationName: data.name,
+      isSupporter: isSupporter,
+    };
+  } else if (res.status == 401) {
+    return { valid: false, reason: ValidityReasons.INVALID };
+  } else if (res.status == 403) {
+    return { valid: false, reason: ValidityReasons.EXPIRED };
+  } else {
+    return { valid: false, reason: ValidityReasons.UNKNOWN };
+  }
+}
+```
+
+**Returns**:
+```typescript
+interface KeyValidity {
+  valid: boolean;
+  reason: ValidityReasons;
+  organizationId?: string;
+  organizationName?: string;
+  isSupporter?: boolean;
+}
+```
+
+#### `registerMatch(match: Match)`
+
+Registers a match in the backend when it starts (src/connector/databaseConnector.ts:63):
+
+```typescript
+public static async registerMatch(match: any) {
+  const { replayLog, eventNumber, timeoutEndTimeout, timeoutRemainingLoop, ...toSend } = match;
+  const res = await this.apiRequest(
+    `system/match/${match.matchId}/register`, 
+    "post", 
+    { match: toSend }
+  );
+}
+```
+
+Strips internal fields before sending to backend.
+
+#### `updateMatch(match: Match)`
+
+Updates match state at round boundaries (src/controller/MatchController.ts:234):
+
+```typescript
+if (this.isRegistered && this.roundNumber !== 1) {
+  DatabaseConnector.updateMatch(this);
+}
+```
+
+Called during shopping phase of each round (except round 1).
+
+#### `completeMatch(match: Match)`
+
+Marks match as complete in backend (src/connector/databaseConnector.ts:93):
+
+```typescript
+public static async completeMatch(match: any): Promise<void> {
+  const { replayLog, eventNumber, timeoutEndTimeout, timeoutRemainingLoop, ...toSend } = match;
+  const res = await this.apiRequest(
+    `system/match/${match.matchId}/complete`, 
+    "put", 
+    { match: toSend }
+  );
+}
+```
+
+Called when match ends or times out after 30 minutes.
+
+#### Statistics Methods (Supporters Only)
+
+For organizations with supporter status:
+
+- `statsAddMatch()`: Registers match for stats tracking
+- `statsUpdateMatchRegion()`: Updates match region from player ID
+- `statsFetchStats()`: Triggers stats fetch from Riot API (15-second delay)
+
+```typescript
+if (this.orgIsSupporter) {
+  setTimeout(() => {
+    DatabaseConnector.statsFetchStats(this.matchId);
+  }, 15000);  // Wait for Riot API availability
+}
+```
+
+#### Playercam Integration
+
+`getNameOverridesAndPlayercams()` fetches player name overrides and playercam settings:
+
+```typescript
+public static async getNameOverridesAndPlayercams(identifier: string, secret: string) {
+  const res = await fetch(
+    playercamUrl + "/api/getNameOverridesAndPlayercams/" + identifier + "/" + secret
+  );
+  
+  const data = await res.json();
+  return data as IOverridesPlayercamsData;
+}
+```
+
+Called during agent select and each shopping phase to get updated configs.
+
+---
+
+## PreviewHandler
+
+Manages preview matches for overlay testing without live games.
+
+**Location**: `src/util/previews/PreviewHandler.ts`
+
+### Responsibilities
+
+- Create preview matches with dummy data
+- Generate or validate preview codes
+- Manage preview expiry (10-minute TTL)
+- Provide preview data to frontends
+
+### Key Implementation
+
+#### Preview Creation
+
+```typescript
+public async handlePreviewCreation(req: Request, res: Response) {
+  const previewData: IPreviewData = req.body;
+  
+  // Validate access key
+  const validity: KeyValidity = await this.wsi.isValidKey(previewData.key);
+  if (!validity.valid) {
+    return res.status(403).json({ error: "Invalid or expired key" });
+  }
+  
+  // Generate or validate preview code
+  let previewCode: string = previewData.previewCode;
+  if (!previewCode || previewCode.length !== 6) {
+    previewCode = this.generateCode();
+  }
+  
+  // Create preview match
+  const previewMatch = new PreviewMatch(previewData);
+  this.previews.set(previewCode, previewMatch);
+  
+  // Set 10-minute expiry
+  const timeout = setTimeout(() => {
+    this.previews.delete(previewCode);
+    this.previewTimeouts.delete(previewCode);
+  }, 10 * 60 * 1000);
+  this.previewTimeouts.set(previewCode, timeout);
+  
+  res.status(200).json({ previewCode: previewCode });
+}
+```
+
+<Info>
+**Preview Expiry**: Previews automatically expire after 10 minutes to prevent memory leaks. Frontends can create a new preview if needed.
+</Info>
+
+#### Code Generation
+
+Valid characters exclude confusing letters:
+
+```typescript
+const validGroupcodeCharacters = "ABCDEFGHJKLMNPQRSTUVWXYZ0123456789";
+// Excludes: I, O (to avoid confusion with 1, 0)
+```
+
+---
+
+## Component Interaction Diagram
+
+```
+┌─────────────────┐
+│ Observer Client │
+└────────┬────────┘
+         │ obs_logon, obs_data
+         │ Port 5100
+         ▼
+┌──────────────────────┐
+│ WebsocketIncoming    │
+│ - Authenticate       │
+│ - Version check      │
+│ - Key validation     │
+└────────┬─────────────┘
+         │
+         │ createMatch(), receiveMatchData()
+         ▼
+┌──────────────────────┐      ┌──────────────────┐
+│  MatchController     │◄─────┤ DatabaseConnector│
+│ - Manage matches     │      │ - Validate keys  │
+│ - Route data         │      │ - Register match │
+│ - Broadcast loop     │      │ - Update state   │
+└────────┬─────────────┘      └──────────────────┘
+         │
+         │ receiveMatchSpecificData()
+         ▼
+┌──────────────────────┐
+│      Match           │
+│ - Process events     │
+│ - Track state        │
+│ - Increment eventNum │
+└────────┬─────────────┘
+         │
+         │ sendMatchData() (when eventNumber changes)
+         ▼
+┌──────────────────────┐
+│ WebsocketOutgoing    │
+│ - Room broadcasting  │
+│ - Filter sensitive   │
+│ Port 5200            │
+└────────┬─────────────┘
+         │ match_data events
+         ▼
+┌─────────────────┐
+│ Broadcast       │
+│ Frontends       │
+└─────────────────┘
+```
+
+## Performance Monitoring
+
+### Key Metrics to Track
+
+<CardGroup cols={2}>
+  <Card title="Active Matches" icon="chart-line">
+    Monitor `MatchController.getMatchCount()` to track server load
+  </Card>
+  <Card title="Broadcast Rate" icon="signal">
+    100ms send loop × number of active matches = broadcasts/second
+  </Card>
+  <Card title="Event Processing Time" icon="clock">
+    Ensure match processing completes within 100ms window
+  </Card>
+  <Card title="Memory Usage" icon="memory">
+    Watch for memory leaks in long-running matches
+  </Card>
+</CardGroup>
+
+### Optimization Tips
+
+<Tip>
+**High Match Count**: If running 50+ concurrent matches, consider:
+- Increasing send loop interval from 100ms to 200ms
+- Implementing worker threads for match processing
+- Using Redis for match state storage
+</Tip>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Data Flow" icon="diagram-project" href="/architecture/data-flow">
+    Understand how data flows through these components
+  </Card>
+  <Card title="Architecture Overview" icon="sitemap" href="/architecture/overview">
+    Return to high-level architecture overview
+  </Card>
+</CardGroup>

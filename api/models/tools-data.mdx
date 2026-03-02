@@ -1,0 +1,482 @@
+---
+title: 'Tools Data'
+description: 'Configuration data for tournament info, sponsors, timeouts, and display settings'
+---
+
+## Overview
+
+The `ToolsData` class contains all configurable settings for a match, including tournament information, sponsor displays, timeout configuration, watermarks, playercam settings, and name overrides.
+
+## ToolsData Class
+
+```typescript
+export class ToolsData {
+  public seriesInfo: ISeriesInfo;
+  public seedingInfo: ISeedingInfo;
+  public tournamentInfo: ITournamentInfo;
+  public timeoutDuration: number = 60;
+  public timeoutCounter: ITimeoutInfo;
+  public timeoutCancellationGracePeriod: number = 10;
+  public sponsorInfo: ISponsorInfo;
+  public watermarkInfo: IWatermarkInfo;
+  public playercamsInfo: IPlayercamsInfo;
+  public nameOverrides: INameOverrides;
+  
+  public constructor(init?: Partial<ToolsData>) {
+    Object.assign(this, init);
+    
+    if (this.tournamentInfo.logoUrl != "" || this.tournamentInfo.name != "") {
+      this.tournamentInfo.enabled = true;
+    }
+    this.timeoutCounter.left = this.timeoutCounter.max;
+    this.timeoutCounter.right = this.timeoutCounter.max;
+  }
+}
+```
+
+## Series Information
+
+### ISeriesInfo
+
+```typescript
+export type ISeriesInfo = {
+  needed: number;
+  wonLeft: number;
+  wonRight: number;
+  mapInfo: MapPoolInfo[];
+};
+```
+
+<ResponseField name="needed" type="number" default="1">
+  Number of maps needed to win the series (e.g., 3 for Bo5).
+</ResponseField>
+
+<ResponseField name="wonLeft" type="number" default="0">
+  Maps won by the left team.
+</ResponseField>
+
+<ResponseField name="wonRight" type="number" default="0">
+  Maps won by the right team.
+</ResponseField>
+
+<ResponseField name="mapInfo" type="MapPoolInfo[]" default="[]">
+  Array of map pool entries showing past results and upcoming maps.
+  
+  <Expandable title="MapPoolInfo Types">
+    See [MapPoolInfo Types](#mappoolinfo-types) below for detailed structure.
+  </Expandable>
+</ResponseField>
+
+## Tournament Configuration
+
+### ITournamentInfo
+
+```typescript
+export type ITournamentInfo = {
+  name: string;
+  logoUrl: string;
+  backdropUrl: string;
+  enabled: boolean;
+};
+```
+
+<ResponseField name="name" type="string" default="">
+  Tournament name to display.
+</ResponseField>
+
+<ResponseField name="logoUrl" type="string" default="">
+  URL to tournament logo image.
+</ResponseField>
+
+<ResponseField name="backdropUrl" type="string" default="">
+  URL to tournament backdrop/background image.
+</ResponseField>
+
+<ResponseField name="enabled" type="boolean">
+  Auto-set to `true` if `name` or `logoUrl` is provided.
+</ResponseField>
+
+### ISeedingInfo
+
+```typescript
+export type ISeedingInfo = {
+  left: string;
+  right: string;
+};
+```
+
+<ResponseField name="left" type="string" default="">
+  Seeding information for left team (e.g., "#1 Seed", "Upper Finals").
+</ResponseField>
+
+<ResponseField name="right" type="string" default="">
+  Seeding information for right team.
+</ResponseField>
+
+## Timeout Configuration
+
+### ITimeoutInfo
+
+```typescript
+export type ITimeoutInfo = {
+  max: number;
+  left: number;
+  right: number;
+};
+```
+
+<ResponseField name="max" type="number" default="2">
+  Maximum timeouts each team can have.
+</ResponseField>
+
+<ResponseField name="left" type="number" default="2">
+  Timeouts remaining for left team. Initialized to `max`.
+</ResponseField>
+
+<ResponseField name="right" type="number" default="2">
+  Timeouts remaining for right team. Initialized to `max`.
+</ResponseField>
+
+### Timeout Settings
+
+<ResponseField name="timeoutDuration" type="number" default="60">
+  Duration of each timeout in seconds.
+</ResponseField>
+
+<ResponseField name="timeoutCancellationGracePeriod" type="number" default="10">
+  Grace period in seconds during which a timeout can be cancelled without consuming it.
+</ResponseField>
+
+## Sponsor Configuration
+
+### ISponsorInfo
+
+```typescript
+export type ISponsorInfo = {
+  enabled: boolean;
+  duration: number;
+  sponsors: string[];
+};
+```
+
+<ResponseField name="enabled" type="boolean" default="false">
+  Whether sponsor rotation is active.
+</ResponseField>
+
+<ResponseField name="duration" type="number" default="5">
+  Seconds each sponsor is displayed before rotating.
+</ResponseField>
+
+<ResponseField name="sponsors" type="string[]" default="[]">
+  Array of sponsor image URLs. Automatically includes Spectra logo for non-supporters.
+</ResponseField>
+
+**Note:** If `enabled` is `true` and the organization is not a Spectra Plus supporter, the Spectra logo is automatically appended to the sponsors array.
+
+## Watermark Settings
+
+### IWatermarkInfo
+
+```typescript
+export type IWatermarkInfo = {
+  spectraWatermark: boolean;
+  customTextEnabled: boolean;
+  customText: string;
+};
+```
+
+<ResponseField name="spectraWatermark" type="boolean" default="true">
+  Whether to show the Spectra watermark.
+  
+  **License Requirement:** Always `true` for non-supporters. Disabling without Spectra Plus violates license terms.
+</ResponseField>
+
+<ResponseField name="customTextEnabled" type="boolean" default="false">
+  Whether custom watermark text is enabled.
+  
+  **Supporter Feature:** Only available with Spectra Plus. Automatically disabled for non-supporters.
+</ResponseField>
+
+<ResponseField name="customText" type="string" default="">
+  Custom watermark text to display (when enabled and user is a supporter).
+</ResponseField>
+
+## Playercam Integration
+
+### IPlayercamsInfo
+
+```typescript
+export type IPlayercamsInfo = {
+  enable: boolean;
+  removeTricodes: boolean;
+  identifier: string;
+  secret: string;
+  endTime: number;
+  enabledPlayers: string[];
+};
+```
+
+<ResponseField name="enable" type="boolean" default="false">
+  Whether playercam integration is enabled.
+</ResponseField>
+
+<ResponseField name="removeTricodes" type="boolean" default="false">
+  Whether to remove team tricodes from player names.
+</ResponseField>
+
+<ResponseField name="identifier" type="string" default="">
+  Unique identifier for playercam session.
+</ResponseField>
+
+<ResponseField name="secret" type="string" default="">
+  Secret key for playercam authentication.
+</ResponseField>
+
+<ResponseField name="endTime" type="number" default="0">
+  Unix timestamp when playercam access expires.
+</ResponseField>
+
+<ResponseField name="enabledPlayers" type="string[]" default="[]">
+  Array of player IDs with playercams enabled. Populated from backend.
+</ResponseField>
+
+## Name Overrides
+
+### INameOverrides
+
+```typescript
+export type INameOverrides = {
+  overrides: string;  // JSON representation of Map<string, string>
+};
+```
+
+<ResponseField name="overrides" type="string" default="'[]'">
+  JSON-encoded map of player ID to display name overrides.
+  
+  <Expandable title="Format">
+    Stored as JSON string for easier transfer:
+    ```json
+    {
+      "player-uuid-1": "CustomName1",
+      "player-uuid-2": "CustomName2"
+    }
+    ```
+  </Expandable>
+</ResponseField>
+
+### IOverridesPlayercamsData
+
+```typescript
+export type IOverridesPlayercamsData = {
+  nameOverrides: string;  // JSON representation of Map<string, string>
+  enabledPlayers: string[];
+};
+```
+
+Response structure from backend when fetching playercam and name override data.
+
+## MapPoolInfo Types
+
+The map pool system supports four states for each map in a series:
+
+### Base Type
+
+```typescript
+type BaseMapPoolInfo = {
+  type: "past" | "present" | "future" | "disabled";
+};
+```
+
+### Past Map
+
+```typescript
+type PastMapPoolInfo = BaseMapPoolInfo & {
+  type: "past";
+  map: string;
+  left: {
+    logo: string;
+    score: number;
+  };
+  right: {
+    logo: string;
+    score: number;
+  };
+};
+```
+
+Represents a completed map with final scores.
+
+<ResponseField name="map" type="string">
+  Map name (e.g., "Ascent", "Bind").
+</ResponseField>
+
+<ResponseField name="left.logo" type="string">
+  Left team logo URL.
+</ResponseField>
+
+<ResponseField name="left.score" type="number">
+  Left team's score on this map.
+</ResponseField>
+
+<ResponseField name="right.logo" type="string">
+  Right team logo URL.
+</ResponseField>
+
+<ResponseField name="right.score" type="number">
+  Right team's score on this map.
+</ResponseField>
+
+### Present Map
+
+```typescript
+type PresentMapPoolInfo = BaseMapPoolInfo & {
+  type: "present";
+  logo: string;
+};
+```
+
+Represents the currently active map.
+
+<ResponseField name="logo" type="string">
+  Map logo/image URL.
+</ResponseField>
+
+### Future Map
+
+```typescript
+type FutureMapPoolInfo = BaseMapPoolInfo & {
+  type: "future";
+  map: string;
+  logo: string;
+};
+```
+
+Represents an upcoming map in the series.
+
+<ResponseField name="map" type="string">
+  Map name.
+</ResponseField>
+
+<ResponseField name="logo" type="string">
+  Map logo URL.
+</ResponseField>
+
+### Disabled Slot
+
+```typescript
+type DisabledMapPoolInfo = BaseMapPoolInfo & {
+  type: "disabled";
+};
+```
+
+Represents an unused map slot.
+
+### Union Type
+
+```typescript
+export type MapPoolInfo =
+  | PastMapPoolInfo
+  | PresentMapPoolInfo
+  | FutureMapPoolInfo
+  | DisabledMapPoolInfo;
+```
+
+## Example Usage
+
+```typescript
+// Basic configuration
+const toolsData = new ToolsData({
+  tournamentInfo: {
+    name: "VCT Champions 2024",
+    logoUrl: "https://example.com/vct-logo.png",
+    backdropUrl: "https://example.com/vct-bg.png",
+    enabled: true
+  },
+  seriesInfo: {
+    needed: 3,  // Best of 5
+    wonLeft: 1,
+    wonRight: 0,
+    mapInfo: [
+      {
+        type: "past",
+        map: "Ascent",
+        left: { logo: "https://example.com/team1.png", score: 13 },
+        right: { logo: "https://example.com/team2.png", score: 11 }
+      },
+      {
+        type: "present",
+        logo: "https://example.com/bind.png"
+      },
+      {
+        type: "future",
+        map: "Haven",
+        logo: "https://example.com/haven.png"
+      }
+    ]
+  },
+  seedingInfo: {
+    left: "#1 Seed - Americas",
+    right: "#2 Seed - EMEA"
+  },
+  timeoutDuration: 90,  // 90-second timeouts
+  timeoutCounter: {
+    max: 2,
+    left: 2,
+    right: 2
+  },
+  sponsorInfo: {
+    enabled: true,
+    duration: 8,
+    sponsors: [
+      "https://example.com/sponsor1.png",
+      "https://example.com/sponsor2.png"
+    ]
+  },
+  watermarkInfo: {
+    spectraWatermark: true,
+    customTextEnabled: true,
+    customText: "VCT Champions - Grand Finals"
+  },
+  playercamsInfo: {
+    enable: true,
+    removeTricodes: true,
+    identifier: "session-123",
+    secret: "secret-456",
+    endTime: Date.now() + 3600000,  // 1 hour from now
+    enabledPlayers: ["player-1", "player-2"]
+  },
+  nameOverrides: {
+    overrides: JSON.stringify({
+      "player-uuid-1": "TenZ",
+      "player-uuid-2": "zekken"
+    })
+  }
+});
+
+// Access configuration
+console.log(toolsData.tournamentInfo.name); // "VCT Champions 2024"
+console.log(toolsData.timeoutCounter.left); // 2
+console.log(toolsData.seriesInfo.needed); // 3
+```
+
+## Automatic Adjustments
+
+<Expandable title="Tournament Auto-Enable">
+  The `tournamentInfo.enabled` flag is automatically set to `true` if either `name` or `logoUrl` is provided in the constructor.
+</Expandable>
+
+<Expandable title="Timeout Counter Initialization">
+  Both `timeoutCounter.left` and `timeoutCounter.right` are automatically set to `timeoutCounter.max` on initialization.
+</Expandable>
+
+<Expandable title="Sponsor Logo Injection">
+  If sponsors are enabled and the organization is not a Spectra Plus supporter, the Spectra logo URL is automatically appended to the `sponsors` array by the Match class.
+</Expandable>
+
+<Expandable title="Watermark Enforcement">
+  For non-supporters:
+  - `watermarkInfo.spectraWatermark` is forced to `true`
+  - `watermarkInfo.customTextEnabled` is forced to `false`
+  
+  This enforcement happens in the Match constructor and cannot be overridden without Spectra Plus.
+</Expandable>
