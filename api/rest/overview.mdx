@@ -135,8 +135,17 @@ Some endpoints may include additional details:
 
 ## Available Endpoints
 
+### Core Endpoints
+
 - [GET /status](/api/rest/status) - Server health check
 - [PUT /createPreview](/api/rest/previews#create-preview) - Create match preview
 - [GET /preview/:previewCode](/api/rest/previews#get-preview) - Retrieve preview data
 - [GET /getOrgForKey](/api/rest/organization) - Verify organization key
 - [GET /getTeamInfoForCode](/api/rest/team-info) - Get team information
+
+### Support & Integration Endpoints
+
+These endpoints are only available when `USE_BACKEND=true`:
+
+- [GET /getSupportPackages](/api/rest/support#get-support-packages) - Fetch Tebex support packages
+- [GET /client/oauth-callback](/api/rest/support#oauth-callback) - Discord OAuth callback handler

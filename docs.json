@@ -68,7 +68,8 @@
               "api/rest/status",
               "api/rest/previews",
               "api/rest/organization",
-              "api/rest/team-info"
+              "api/rest/team-info",
+              "api/rest/support"
             ]
           },
           {
